@@ -1,0 +1,67 @@
+# =============================================================================
+#  基于 RAG 的金融制度类知识问答系统 · Git 忽略规则
+# =============================================================================
+
+# ---- 密钥与本地配置（最重要：绝不能提交） ----
+.env
+.env.local
+.env.*.local
+deploy/.env
+backend/.env
+frontend/.env.local
+*.pem
+*.key
+
+# ---- 运行时数据与卷（体积大、且含真实制度原文） ----
+data/
+deploy/data/
+volumes/
+deploy/volumes/
+backups/
+reports/
+logs/
+*.log
+
+# ---- 测试与评测产物 ----
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+data/eval/*.xlsx
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+env/
+.conda/
+
+# ---- Node / 前端 ----
+node_modules/
+frontend/dist/
+frontend/.vite/
+.pnpm-store/
+*.tsbuildinfo
+
+# ---- IDE 与操作系统 ----
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 临时文件 ----
+*.tmp
+*.bak
+*~
