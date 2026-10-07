@@ -13,7 +13,11 @@ frontend/.env.local
 *.key
 
 # ---- 运行时数据与卷（体积大、且含真实制度原文） ----
-data/
+# 原始制度文件和 OCR 中间产物只保留在本地，不提交仓库
+data/raw/
+data/ocr_cache/
+data/ocr_output/
+data/tmp/
 deploy/data/
 volumes/
 deploy/volumes/
@@ -30,6 +34,15 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 data/eval/*.xlsx
+
+# 可提交的结构化数据资产（候选表、来源登记表）
+!data/
+!data/metadata/
+data/metadata/*
+!data/metadata/document_registry.xlsx
+!data/knowledge_points/
+data/knowledge_points/*
+!data/knowledge_points/knowledge_points_candidates.xlsx
 
 # ---- Python ----
 __pycache__/
