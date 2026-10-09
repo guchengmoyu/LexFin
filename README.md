@@ -60,15 +60,25 @@
 | 08 | [部署与运维设计](docs/08-部署与运维设计.md) | Docker 编排、环境变量、备份、排障 |
 | 09 | [测试方案设计](docs/09-测试方案设计.md) | pytest、Apifox、性能与准确率评测 |
 | 10 | [开发计划与里程碑](docs/10-开发计划与里程碑.md) | 周计划、任务拆分、风险应对 |
+| 11 | [后端与 RAG 代码实现说明](docs/11-后端与RAG代码实现说明.md) | 设计→代码映射、RAG 算法要点、验收指标对照 |
 
 ## 五、可执行交付物（设计规格的落地形式）
 
 ```
+backend/                  # 后端 + RAG + AI（FastAPI / LangChain / Milvus，已交付）
+  app/                    #   core / api / models / schemas / services / rag / db / utils
+  scripts/                #   运维脚本（向量重建、一致性巡检、关联重建、时效刷新）
+  tests/                  #   pytest 单元与接口测试
+  README.md               #   后端实现说明（运行、配置、测试、运维）
 deploy/
   docker-compose.yml          # 一键编排全部服务
   docker-compose.infra.yml    # 只起 MySQL + Milvus（立即可用）
   .env.example                # 环境变量模板
   mysql/init/01-schema.sql    # MySQL 建库建表 DDL（与 docs/03 一致）
+scripts/                  # 评测与压测脚本（HTTP 客户端）
+  eval_rag.py                 # 110 题评测集：Hit@k / MRR / 拒答正确率 / 准确率报告
+  bench_api.py                # T1 检索 / T2 问答首 token 分位数压测
+  smoke.sh                    # 发版前 30 秒冒烟
 apifox/
   README.md                   # Apifox 使用指南（导入 / 自动同步 / 测试场景 / CLI）
   FinRAG-collection.json      # 接口集合（Postman v2.1 格式，Apifox 直接导入，与 docs/06 一致）
@@ -77,8 +87,9 @@ apifox/
 
 ## 六、快速开始
 
-> 当前仓库只包含**设计文档与可执行规格**，`backend/` 与 `frontend/` 需按 `docs/10` 的计划创建。
-> 因此下面分两步：**第一步现在就能跑通并验证环境**，第二步在应用代码就绪后执行。
+> **后端与 RAG 代码已交付**（`backend/`，说明见 [backend/README.md](backend/README.md)）；
+> `frontend/`（Vue 3）按 `docs/10` 的计划另行开发。因此下面分两步：
+> **第一步先起基础设施验证环境**，第二步全栈部署（前端就绪前可只部署后端）。
 
 ### 第一步（现在可用）：只启动基础设施，验证环境
 
@@ -99,7 +110,7 @@ docker exec -it finrag-mysql mysql -ufinrag -p -e "USE finrag; SHOW TABLES; SELE
 # 浏览器打开 http://localhost:3000
 ```
 
-### 第二步（应用代码就绪后）：全栈一键部署
+### 第二步（后端就绪）：全栈一键部署
 
 ```bash
 cd deploy
@@ -107,6 +118,9 @@ cd deploy
 docker compose up -d --build
 docker compose logs -f backend
 ```
+
+> 前端 `frontend/` 尚未创建时，`docker compose up -d --build backend` 只构建部署后端，
+> 接口联调可直接使用 Swagger（http://localhost:8000/docs）或 Apifox。
 
 | 入口 | 地址 |
 | --- | --- |
@@ -124,13 +138,14 @@ docker compose logs -f backend
 
 ```
 创新实践3/
-├── backend/          # FastAPI 应用（app/ tests/ alembic/ Dockerfile）
-├── frontend/         # Vue 3 应用（src/ Dockerfile nginx.conf）
+├── backend/          # FastAPI 应用（app/ tests/ scripts/ Dockerfile）✅ 已交付
+├── frontend/         # Vue 3 应用（src/ Dockerfile nginx.conf）· 待开发
 ├── deploy/           # Docker 编排、初始化 SQL、环境变量
 ├── apifox/           # Apifox 接口集合、环境与使用指南
-├── scripts/          # 数据处理与评测脚本
+├── scripts/          # 评测与压测脚本（eval_rag / bench_api / smoke）
 ├── docs/             # 本套设计文档
 └── data/             # 原始文档、OCR 中间产物（运行期挂载卷，不入 Git）
 ```
 
-> 当前仓库仅含设计文档与可执行规格文件，`backend/`、`frontend/` 按 `docs/10` 的计划逐步创建。
+> 后端与 RAG/AI 代码已完成（对照说明见 [docs/11](docs/11-后端与RAG代码实现说明.md)）；
+> `frontend/` 按 `docs/10` 的计划创建。
