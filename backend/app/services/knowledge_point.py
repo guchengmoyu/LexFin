@@ -723,6 +723,22 @@ class KnowledgePointService:
             return "verify_status", "非法审核状态"
         if row.get("status") and row["status"] not in {"draft", "published", "archived"}:
             return "status", "非法发布状态"
+        if row.get("timeliness") and row["timeliness"] not in {"effective", "amended", "repealed", "unknown"}:
+            return "timeliness", "非法时效状态"
+        for field in ("effective_date", "expiry_date"):
+            value = (row.get(field) or "").strip()
+            if value:
+                from app.utils.time import parse_date
+                if parse_date(value) is None:
+                    return field, "日期格式无法识别，应为 YYYY-MM-DD"
+        try:
+            difficulty = int(row.get("difficulty") or 1)
+        except (TypeError, ValueError):
+            return "difficulty", "难度必须为 1~5 的整数"
+        if not 1 <= difficulty <= 5:
+            return "difficulty", "难度必须为 1~5 的整数"
+        if row.get("status") == "published" and row.get("verify_status") != "passed":
+            return "status", "只有 verify_status=passed 才能发布"
         return None
 
     def _upsert_import_row(self, db: Session, user: User, kb_id: int, row: dict) -> KnowledgePoint:

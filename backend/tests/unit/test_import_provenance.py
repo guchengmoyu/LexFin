@@ -39,3 +39,22 @@ def test_missing_document_is_rejected():
     with pytest.raises(ValueError):
         KnowledgePointService()._resolve_import_source(SourceDB([], documents=[]), 1,
             {'source_file':'missing.pdf', 'quote_text':'制度事实'})
+
+
+@pytest.mark.parametrize('field,value', [
+    ('effective_date', '2018-99-01'),
+    ('expiry_date', 'yesterday'),
+    ('timeliness', 'current'),
+    ('difficulty', '0'),
+])
+def test_import_metadata_format_is_rejected(field, value):
+    row = {'title': '有效标题', 'content': '这是一段足够长度的制度事实内容。',
+           'category': 'banking', field: value}
+    error = KnowledgePointService()._validate_import_row(row)
+    assert error is not None and error[0] == field
+
+
+def test_published_requires_passed_review():
+    row = {'title': '有效标题', 'content': '这是一段足够长度的制度事实内容。',
+           'category': 'banking', 'status': 'published', 'verify_status': 'pending'}
+    assert KnowledgePointService()._validate_import_row(row)[0] == 'status'
