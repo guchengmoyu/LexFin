@@ -51,9 +51,15 @@ async def test_search_highlight_escapes_xss(auth_client):
     evil = "<script>alert(1)</script> 流动性覆盖率"
     r = await auth_client.get(f"{API}/search", params={"q": evil, "highlight": True})
     assert r.status_code == 200
-    text = r.text
-    assert "<script>alert(1)</script>" not in text
-    assert "&lt;script&gt;" in text or "items" in text
+    data = r.json()["data"]
+    assert data["query"] == evil  # JSON echo is plain text, not rendered HTML.
+    for item in data["items"]:
+        assert "<script>" not in (item.get("highlight") or "")
+    # Cover escaping even when the isolated search corpus has no hits.
+    from app.services.retrieval import highlight_text
+    rendered = highlight_text(evil, ["流动性覆盖率"])
+    assert "<script>" not in rendered
+    assert "&lt;script&gt;" in rendered
 
 
 async def test_search_pagination_shape(auth_client):
