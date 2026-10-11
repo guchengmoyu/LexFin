@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import sys
+import os
 from types import ModuleType
 from typing import Any, List, Optional, Sequence, Tuple
 from unittest import mock
@@ -19,7 +20,7 @@ import pytest
 # --------------------------------------------------------------------------- #
 #  0. pymilvus 惰性 stub（任何属性访问返回 MagicMock，绝不出网/不连接 Milvus）
 # --------------------------------------------------------------------------- #
-if "pymilvus" not in sys.modules:
+if os.environ.get("LEXFIN_INTEGRATION") != "1" and "pymilvus" not in sys.modules:
     _pymilvus_stub = ModuleType("pymilvus")
 
     def _fake_attr(name: str) -> Any:

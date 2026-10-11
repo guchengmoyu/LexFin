@@ -7,6 +7,7 @@ LLM 与 Embedding 用确定性 Fake 实现。
 from __future__ import annotations
 
 import hashlib
+import os
 from typing import AsyncIterator, Generator, List
 
 import pytest
@@ -48,6 +49,13 @@ class FakeLLM:
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="session", autouse=True)
 def ensure_infra() -> None:
+    from app.core.config import settings
+    if os.environ.get("LEXFIN_INTEGRATION") != "1":
+        pytest.skip("Set LEXFIN_INTEGRATION=1 with isolated test infrastructure")
+    if not (settings.mysql_database.startswith("finrag_test_")
+            and settings.milvus_collection.startswith("finrag_test_")
+            and settings.milvus_alias.startswith("finrag_test_")):
+        pytest.fail("Integration tests require finrag_test_ database, collection and alias; refusing shared data")
     from app.db.session import ping
 
     try:
