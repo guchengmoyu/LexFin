@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover - 兜底，保证纯算法可独立测�
 CN_NUM = r"[一二三四五六七八九十百零〇\d]+"
 CHAPTER_RE = re.compile(rf"^(第{CN_NUM}章)(\s+\S.*)?$")
 SECTION_RE = re.compile(rf"^(第{CN_NUM}节)(\s+\S.*)?$")
-ARTICLE_RE = re.compile(rf"^(第{CN_NUM}条)(\s+\S.*)?$")
+ARTICLE_RE = re.compile(rf"^(第{CN_NUM}条)(.*)$")
 ITEM_RE = re.compile(r"^[（(][一二三四五六七八九十\d]+[）)]")
 NUM_UNIT_RE = re.compile(r"^\d+(\.\d+){0,3}\s+\S")
 ATTACH_RE = re.compile(r"^附\s*(则|件|表)")

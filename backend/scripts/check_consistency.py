@@ -34,7 +34,7 @@ def main() -> None:
                 .select_from(DocumentChunk)
                 .where(DocumentChunk.document_id == doc.id)
             ) or 0
-            milvus_count = indexer.count(f"document_id == {doc.id}")
+            milvus_count = indexer.count(f'document_id == {doc.id} and source_type == "chunk"')
             diff = mysql_count - milvus_count
             if diff != 0:
                 diff_docs.append(doc.id)
@@ -55,7 +55,7 @@ def main() -> None:
 
             embedder = get_embedder()
             for doc_id in diff_docs:
-                indexer.delete_by_document(doc_id)
+                indexer._delete(f'document_id == {doc_id} and source_type == "chunk"')
                 rows = db.execute(
                     select(DocumentChunk, Document)
                     .join(Document, Document.id == DocumentChunk.document_id)

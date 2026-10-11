@@ -66,6 +66,7 @@ class KnowledgePointSource(Base):
     page_no: Mapped[Optional[int]] = mapped_column(Integer)
     article_no: Mapped[Optional[str]] = mapped_column(String(50))
     quote_text: Mapped[Optional[str]] = mapped_column(Text)
+    source_url: Mapped[Optional[str]] = mapped_column(String(2000))
     is_primary: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 

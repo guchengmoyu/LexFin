@@ -96,7 +96,7 @@ class VectorIndexer:
             results = col.search(
                 data=[vector],
                 anns_field="embedding",
-                search_params={
+                param={
                     "metric_type": settings.milvus_metric_type,
                     "params": {"ef": settings.milvus_search_ef},
                 },
@@ -106,7 +106,7 @@ class VectorIndexer:
             )
             out: List[Dict[str, Any]] = []
             for hit in results[0]:
-                row = dict(hit.entity)
+                row = {field: hit.entity.get(field) for field in (output_fields or OUTPUT_FIELDS)}
                 row["distance"] = float(hit.distance)
                 row["pk"] = hit.id
                 out.append(row)
