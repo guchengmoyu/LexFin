@@ -61,6 +61,34 @@ def test_published_requires_passed_review():
     assert KnowledgePointService()._validate_import_row(row)[0] == 'status'
 
 
+def test_insurance_law_review_category_is_accepted():
+    row = {'title': '保险合同与监管要求是什么？', 'content': '保险合同与监管内容足够完整，可以独立阅读。',
+           'category': 'insurance', 'sub_category': '保险合同与监管'}
+    assert KnowledgePointService()._validate_import_row(row) is None
+
+
+def test_model_load_failure_does_not_fall_back_to_incompatible_vectors(monkeypatch):
+    from app.core.config import settings
+    from app.rag import embedder
+
+    def fail_to_load():
+        raise RuntimeError("model cache unavailable")
+
+    embedder.reset_embedder()
+    monkeypatch.setattr(settings, "embedding_provider", "local")
+    monkeypatch.setattr(embedder, "LocalBgeEmbedder", fail_to_load)
+    with pytest.raises(RuntimeError, match="model cache unavailable"):
+        embedder.get_embedder()
+    embedder.reset_embedder()
+
+
+def test_long_chinese_article_range_is_omitted_from_milvus_scalar():
+    from app.rag.indexer import _article_no_for_milvus
+
+    assert _article_no_for_milvus("第三十八条") == "第三十八条"
+    assert _article_no_for_milvus("第一百零一条~第一百零二条") == ""
+
+
 def test_excel_native_dates_are_normalized():
     import io
     from datetime import datetime

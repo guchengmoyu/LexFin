@@ -207,19 +207,18 @@ class IngestService:
                     db, task_no, TaskStatus.embedding,
                     f"正在向量化切片 {done}/{total}", progress=progress,
                 )
-                for c in batch:
-                    row = db.scalar(
-                        select(DocumentChunk).where(DocumentChunk.id == c["id"])
-                    )
-                    if row is not None:
-                        row.embedding_status = 1
-
         with session_scope() as db:
             self._update_stage(db, task_no, TaskStatus.indexing, "正在写入向量库")
         indexer.upsert(rows)
 
         # ⑦ 收尾：切片自检告警 + 状态流转
         with session_scope() as db:
+            for chunk_id in (c["id"] for c in chunk_payload):
+                row = db.scalar(
+                    select(DocumentChunk).where(DocumentChunk.id == chunk_id)
+                )
+                if row is not None:
+                    row.embedding_status = 1
             doc = db.get(Document, document_id)
             doc.chunk_count = total
             doc.status = "ready"

@@ -19,6 +19,13 @@ OUTPUT_FIELDS = [
     "source_type", "source_id", "kb_id", "document_id", "category", "timeliness",
     "article_no", "page_no", "chunk_index", "content", "publish_year",
 ]
+ARTICLE_NO_MAX_BYTES = 32
+
+
+def _article_no_for_milvus(value: Optional[str]) -> str:
+    """Keep exact short article labels; omit long ranges from the bounded scalar field."""
+    article_no = value or ""
+    return article_no if len(article_no.encode("utf-8")) <= ARTICLE_NO_MAX_BYTES else ""
 
 
 class VectorIndexer:
@@ -47,7 +54,7 @@ class VectorIndexer:
                     [r["document_id"] for r in rows],
                     [r.get("category", "") for r in rows],
                     [r.get("timeliness", "unknown") for r in rows],
-                    [r.get("article_no") or "" for r in rows],
+                    [_article_no_for_milvus(r.get("article_no")) for r in rows],
                     [int(r.get("page_no") or 0) for r in rows],
                     [int(r.get("chunk_index") or -1) for r in rows],
                     [int(r.get("publish_year") or 0) for r in rows],
