@@ -171,6 +171,7 @@ def row_to_item(row: Dict[str, Any]) -> RetrievedItem:
         chunk_index=int(row.get("chunk_index") or -1),
         content=row.get("content") or "",
         raw_content=(row.get("content") or "").split("\n", 1)[-1],
+        vector_similarity=float(row["distance"]) if row.get("distance") is not None else None,
     )
 
 

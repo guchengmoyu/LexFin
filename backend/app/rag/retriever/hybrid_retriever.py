@@ -58,6 +58,14 @@ def rrf_fuse(
             # 拷贝，避免污染通道产物
             clone = RetrievedItem(**{**item.__dict__})
             fused[key] = clone
+        # Merge channel metadata as well as scores; keyword evidence must not
+        # disappear when the vector channel creates the clone first.
+        if item.vector_rank is not None:
+            fused[key].vector_rank = item.vector_rank
+        if item.keyword_rank is not None:
+            fused[key].keyword_rank = item.keyword_rank
+        if item.vector_similarity is not None:
+            fused[key].vector_similarity = item.vector_similarity
         scores[key] = scores.get(key, 0.0) + weight / (k + rank)
 
     for rank, item in enumerate(vector_items, start=1):

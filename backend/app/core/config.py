@@ -106,6 +106,7 @@ class Settings(BaseSettings):
     rrf_w_keyword: float = 0.4
     rrf_ref: float = 0.03
     retrieval_min_score: float = 0.30
+    qa_min_vector_similarity: float = Field(0.0, ge=0.0, le=1.0)
 
     timeliness_weight_effective: float = 1.00
     timeliness_weight_amended: float = 0.90
