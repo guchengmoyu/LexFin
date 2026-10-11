@@ -46,6 +46,7 @@ def test_missing_document_is_rejected():
     ('expiry_date', 'yesterday'),
     ('timeliness', 'current'),
     ('difficulty', '0'),
+    ('difficulty', '4'),
 ])
 def test_import_metadata_format_is_rejected(field, value):
     row = {'title': 'Valid metadata title', 'content': 'This is a sufficiently long policy fact content.',
@@ -58,3 +59,20 @@ def test_published_requires_passed_review():
     row = {'title': 'Valid metadata title', 'content': 'This is a sufficiently long policy fact content.',
            'category': 'banking', 'status': 'published', 'verify_status': 'pending'}
     assert KnowledgePointService()._validate_import_row(row)[0] == 'status'
+
+
+def test_excel_native_dates_are_normalized():
+    import io
+    from datetime import datetime
+    from openpyxl import Workbook
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(['title', 'content', 'category', 'effective_date', 'expiry_date'])
+    sheet.append(['Valid policy title', 'A sufficiently long policy fact.', 'banking',
+                  datetime(2018, 7, 1), None])
+    stream = io.BytesIO()
+    workbook.save(stream)
+    row = KnowledgePointService._parse_import_file('dates.xlsx', stream.getvalue())[0]
+    assert row['effective_date'] == '2018-07-01'
+    assert row['expiry_date'] == ''
+    assert KnowledgePointService._validate_import_row(row) is None

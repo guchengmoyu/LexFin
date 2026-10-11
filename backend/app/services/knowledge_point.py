@@ -9,6 +9,7 @@ import csv
 import io
 import re
 import unicodedata
+from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import func, or_, select
@@ -697,7 +698,9 @@ class KnowledgePointService:
             out = []
             for row in rows_iter:
                 out.append(
-                    {header[i]: (str(row[i]).strip() if row[i] is not None else "")
+                    {header[i]: (row[i].strftime("%Y-%m-%d")
+                                 if header[i] in {"effective_date", "expiry_date"} and isinstance(row[i], (date, datetime))
+                                 else str(row[i]).strip() if row[i] is not None else "")
                      for i in range(min(len(header), len(row)))}
                 )
             return out
@@ -734,9 +737,9 @@ class KnowledgePointService:
         try:
             difficulty = int(row.get("difficulty") or 1)
         except (TypeError, ValueError):
-            return "difficulty", "难度必须为 1~5 的整数"
-        if not 1 <= difficulty <= 5:
-            return "difficulty", "难度必须为 1~5 的整数"
+            return "difficulty", "难度必须为 1~3 的整数"
+        if not 1 <= difficulty <= 3:
+            return "difficulty", "难度必须为 1~3 的整数"
         if row.get("status") == "published" and row.get("verify_status") != "passed":
             return "status", "只有 verify_status=passed 才能发布"
         return None
