@@ -42,10 +42,12 @@ KP_SQL = sql_text(
     SELECT k.id AS source_id, k.primary_document_id AS document_id, k.kb_id,
            k.article_no, k.title, k.content, k.doc_no, k.issuing_authority,
            k.timeliness, k.category, k.primary_chunk_id,
+           d.title AS doc_title,
            YEAR(k.effective_date) AS publish_year,
            MATCH(k.title, k.content, k.keywords) AGAINST (:q IN NATURAL LANGUAGE MODE)
            + IF(k.title LIKE CONCAT('%', :raw, '%'), 5, 0) AS score
     FROM knowledge_point k
+    LEFT JOIN document d ON d.id = k.primary_document_id
     WHERE k.status = 'published'
       AND k.verify_status = 'passed'
       AND MATCH(k.title, k.content, k.keywords) AGAINST (:q IN NATURAL LANGUAGE MODE)

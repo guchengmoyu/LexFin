@@ -107,6 +107,7 @@ def sample_corpus(ensure_infra):
     from app.models.knowledge_base import KnowledgeBase
     from app.models.document import Document
     from app.models.chunk import DocumentChunk
+    from app.models.knowledge_point import KnowledgePoint
     from app.rag.indexer import indexer
     from app.db.init_milvus import get_collection
 
@@ -132,6 +133,20 @@ def sample_corpus(ensure_infra):
                             source_type="chunk", source_id=chunk.id, kb_id=kb.id,
                             document_id=doc.id, category="banking", timeliness="effective",
                             article_no="第三十八条", page_no=1, chunk_index=0, content=body)])
+        kp = db.scalar(select(KnowledgePoint).where(KnowledgePoint.code == "IT-KP-0001"))
+        if kp is None:
+            kp = KnowledgePoint(kb_id=kb.id, code="IT-KP-0001",
+                                title="流动性覆盖率最低监管标准是什么？", content=body,
+                                category="banking", sub_category="流动性风险", article_no="第三十八条",
+                                timeliness="effective", status="published", verify_status="passed",
+                                primary_document_id=doc.id, primary_chunk_id=chunk.id,
+                                embedding_status=1)
+            db.add(kp); db.flush()
+        indexer.upsert([dict(pk=f"kp_{kp.id}", embedding=FakeEmbedder().encode([kp.title + "\n" + kp.content])[0],
+                            source_type="knowledge_point", source_id=kp.id, kb_id=kb.id,
+                            document_id=doc.id, category="banking", timeliness="effective",
+                            article_no="第三十八条", page_no=1, chunk_index=-1,
+                            content=kp.title + "\n" + kp.content)])
     # Integration failure must be visible, never interpreted as an empty corpus.
     col = get_collection(); col.load()
     assert col.query(expr=f'pk == "chunk_{chunk.id}"', output_fields=["source_id"])
