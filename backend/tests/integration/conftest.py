@@ -98,6 +98,45 @@ def db_session() -> Generator:
     conn.close()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def sample_corpus(ensure_infra):
+    """Persist one deterministic sample in isolated infrastructure only."""
+    from sqlalchemy import select
+    from app.db.session import session_scope
+    from app.db.seed import seed_all
+    from app.models.knowledge_base import KnowledgeBase
+    from app.models.document import Document
+    from app.models.chunk import DocumentChunk
+    from app.rag.indexer import indexer
+    from app.db.init_milvus import get_collection
+
+    body = "第三十八条 流动性覆盖率的最低监管标准为不低于100%。"
+    with session_scope() as db:
+        seed_all(db)
+        kb = db.scalar(select(KnowledgeBase).where(KnowledgeBase.category == "banking"))
+        digest = hashlib.md5(body.encode()).hexdigest()
+        doc = db.scalar(select(Document).where(Document.kb_id == kb.id, Document.file_md5 == digest))
+        if doc is None:
+            doc = Document(kb_id=kb.id, title="集成测试样本（非正式制度）", category="banking",
+                           file_name="integration_sample.txt", file_path="integration_sample.txt",
+                           file_ext="txt", file_md5=digest, status="ready", timeliness="effective",
+                           page_count=1, chunk_count=1)
+            db.add(doc); db.flush()
+        chunk = db.scalar(select(DocumentChunk).where(DocumentChunk.document_id == doc.id))
+        if chunk is None:
+            chunk = DocumentChunk(document_id=doc.id, kb_id=kb.id, chunk_index=0,
+                                  article_no="第三十八条", page_start=1, page_end=1,
+                                  content=body, raw_content=body, embedding_status=1)
+            db.add(chunk); db.flush()
+        indexer.upsert([dict(pk=f"chunk_{chunk.id}", embedding=FakeEmbedder().encode([body])[0],
+                            source_type="chunk", source_id=chunk.id, kb_id=kb.id,
+                            document_id=doc.id, category="banking", timeliness="effective",
+                            article_no="第三十八条", page_no=1, chunk_index=0, content=body)])
+    # Integration failure must be visible, never interpreted as an empty corpus.
+    col = get_collection(); col.load()
+    assert col.query(expr=f'pk == "chunk_{chunk.id}"', output_fields=["source_id"])
+
+
 # --------------------------------------------------------------------------- #
 #  API 客户端
 # --------------------------------------------------------------------------- #
