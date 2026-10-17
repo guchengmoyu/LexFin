@@ -1,0 +1,7 @@
+# 测试与开发依赖（docs/09）
+-r requirements.txt
+
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+coverage==7.6.9

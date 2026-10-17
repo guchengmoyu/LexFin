@@ -1,0 +1,54 @@
+# =============================================================================
+#  FinRAG 后端依赖（Python 3.11，docs/README 技术栈）
+#  一期全部选用最经典、社区最成熟的方案（docs/00 选型原则）
+# =============================================================================
+
+# --- Web 框架（课题指定 FastAPI + Uvicorn） ---
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.17
+pydantic==2.10.3
+pydantic-settings==2.6.1
+
+# --- 关系库（课题指定 MySQL 8.0） ---
+SQLAlchemy==2.0.36
+PyMySQL==1.1.1
+cryptography==43.0.3
+alembic==1.14.0
+
+# --- RAG 编排（课题指定 LangChain 0.3） ---
+langchain==0.3.13
+langchain-core==0.3.28
+langchain-openai==0.2.14
+langchain-text-splitters==0.3.4
+
+# --- 向量库（课题指定 Milvus 2.4） ---
+pymilvus==2.4.9
+
+# --- 向量化 / 重排（docs/00 ADR-02；首次启动下载权重约 1.3GB） ---
+sentence-transformers==3.3.1
+# torch 随 sentence-transformers 自动安装；CPU 环境如需精简可改用：
+# torch --index-url https://download.pytorch.org/whl/cpu
+
+# --- 文档解析（docs/04） ---
+PyMuPDF==1.24.14
+pdfplumber==0.11.4
+python-docx==1.1.2
+Pillow==11.0.0
+opencv-python-headless==4.10.0.84
+
+# --- OCR（课题指定 Tesseract 5，系统包在 Dockerfile 安装） ---
+pytesseract==0.3.13
+
+# --- LLM / Embedding 云接口（OpenAI 兼容协议，ADR-03） ---
+openai==1.58.1
+
+# --- 安全（docs/06 §6：bcrypt cost=12 + JWT HS256） ---
+bcrypt==4.2.1
+PyJWT==2.10.1
+
+# --- 工具 ---
+loguru==0.7.3
+jieba==0.42.1
+httpx==0.28.1
+openpyxl==3.1.5
