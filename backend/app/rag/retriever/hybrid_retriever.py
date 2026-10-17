@@ -58,6 +58,14 @@ def rrf_fuse(
             # 拷贝，避免污染通道产物
             clone = RetrievedItem(**{**item.__dict__})
             fused[key] = clone
+        # Merge channel metadata as well as scores; keyword evidence must not
+        # disappear when the vector channel creates the clone first.
+        if item.vector_rank is not None:
+            fused[key].vector_rank = item.vector_rank
+        if item.keyword_rank is not None:
+            fused[key].keyword_rank = item.keyword_rank
+        if item.vector_similarity is not None:
+            fused[key].vector_similarity = item.vector_similarity
         scores[key] = scores.get(key, 0.0) + weight / (k + rank)
 
     for rank, item in enumerate(vector_items, start=1):
@@ -178,6 +186,22 @@ class HybridRetriever:
             keyword_items = await asyncio.to_thread(
                 search_keyword, db, query_info, kb_ids
             )
+        vector_items = self._published_items(db, vector_items)
+        keyword_items = self._published_items(db, keyword_items)
+        # Milvus stores IDs and vector metadata; hydrate provenance from SQL
+        # before fusion so structured document-number boosts also work.
+        from sqlalchemy import select
+        from app.models.document import Document
+        doc_ids = {item.document_id for item in vector_items if item.document_id}
+        documents = {doc.id: doc for doc in db.scalars(
+            select(Document).where(Document.id.in_(doc_ids))
+        ).all()} if doc_ids else {}
+        for item in vector_items:
+            doc = documents.get(item.document_id)
+            if doc is not None:
+                item.doc_title = doc.title
+                item.doc_no = doc.doc_no
+                item.issuing_authority = doc.issuing_authority
         if mode == "keyword":
             keyword_items = [i for i in keyword_items if i.source_type in source_types]
         if mode == "vector":
@@ -206,6 +230,38 @@ class HybridRetriever:
 
     def retrieve_sync(self, *args, **kwargs) -> List[RetrievedItem]:
         return asyncio.run(self.retrieve(*args, **kwargs))
+
+    @staticmethod
+    def _published_items(db: Session, items: Sequence[RetrievedItem]) -> List[RetrievedItem]:
+        from sqlalchemy import select
+        from app.models.knowledge_point import KnowledgePoint
+        from app.models.chunk import DocumentChunk
+        from app.models.document import Document
+        kp_ids = {item.source_id for item in items if item.source_type == "knowledge_point"}
+        allowed = {kp.id: kp for kp in db.scalars(select(KnowledgePoint).where(
+            KnowledgePoint.id.in_(kp_ids), KnowledgePoint.status == "published",
+            KnowledgePoint.verify_status == "passed",
+            KnowledgePoint.primary_chunk_id.is_not(None))).all()} if kp_ids else {}
+        result = []
+        for item in items:
+            if item.source_type == "knowledge_point":
+                kp = allowed.get(item.source_id)
+                if kp is None:
+                    continue
+                chunk = db.get(DocumentChunk, kp.primary_chunk_id)
+                doc = db.get(Document, kp.primary_document_id) if kp.primary_document_id else None
+                if chunk is None or doc is None or doc.status != "ready":
+                    continue
+                item.title = kp.title
+                item.raw_content = kp.content
+                item.document_id = doc.id
+                item.doc_title = doc.title
+                item.doc_no = kp.doc_no or doc.doc_no
+                item.issuing_authority = kp.issuing_authority or doc.issuing_authority
+                item.page_no = chunk.page_start
+                item.article_no = kp.article_no
+            result.append(item)
+        return result
 
     @staticmethod
     def _kp_primary_chunks(db: Session, items: Sequence[RetrievedItem]) -> Dict[int, int]:

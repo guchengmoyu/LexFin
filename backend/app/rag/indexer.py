@@ -19,6 +19,13 @@ OUTPUT_FIELDS = [
     "source_type", "source_id", "kb_id", "document_id", "category", "timeliness",
     "article_no", "page_no", "chunk_index", "content", "publish_year",
 ]
+ARTICLE_NO_MAX_BYTES = 32
+
+
+def _article_no_for_milvus(value: Optional[str]) -> str:
+    """Keep exact short article labels; omit long ranges from the bounded scalar field."""
+    article_no = value or ""
+    return article_no if len(article_no.encode("utf-8")) <= ARTICLE_NO_MAX_BYTES else ""
 
 
 class VectorIndexer:
@@ -47,7 +54,7 @@ class VectorIndexer:
                     [r["document_id"] for r in rows],
                     [r.get("category", "") for r in rows],
                     [r.get("timeliness", "unknown") for r in rows],
-                    [r.get("article_no") or "" for r in rows],
+                    [_article_no_for_milvus(r.get("article_no")) for r in rows],
                     [int(r.get("page_no") or 0) for r in rows],
                     [int(r.get("chunk_index") or -1) for r in rows],
                     [int(r.get("publish_year") or 0) for r in rows],
@@ -96,7 +103,7 @@ class VectorIndexer:
             results = col.search(
                 data=[vector],
                 anns_field="embedding",
-                search_params={
+                param={
                     "metric_type": settings.milvus_metric_type,
                     "params": {"ef": settings.milvus_search_ef},
                 },
@@ -106,7 +113,7 @@ class VectorIndexer:
             )
             out: List[Dict[str, Any]] = []
             for hit in results[0]:
-                row = dict(hit.entity)
+                row = {field: hit.entity.get(field) for field in (output_fields or OUTPUT_FIELDS)}
                 row["distance"] = float(hit.distance)
                 row["pk"] = hit.id
                 out.append(row)
@@ -171,6 +178,7 @@ def row_to_item(row: Dict[str, Any]) -> RetrievedItem:
         chunk_index=int(row.get("chunk_index") or -1),
         content=row.get("content") or "",
         raw_content=(row.get("content") or "").split("\n", 1)[-1],
+        vector_similarity=float(row["distance"]) if row.get("distance") is not None else None,
     )
 
 

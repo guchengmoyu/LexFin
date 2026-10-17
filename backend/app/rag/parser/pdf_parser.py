@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import re
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import List
 
@@ -103,7 +105,10 @@ class PdfParser:
     def _extract_blocks(self, page, text: str) -> List[TextBlock]:
         blocks: List[TextBlock] = []
         # 表格探测（PyMuPDF ≥ 1.23）
-        table_texts = self._extract_tables(page)
+        table_texts = [
+            table_text for table_text in self._extract_tables(page)
+            if not self._is_duplicate_page_table(table_text, text)
+        ]
         for t in table_texts:
             blocks.append(TextBlock(type="table", text=t, page_no=page.number + 1))
         # 正文按段落边界切块
@@ -112,6 +117,18 @@ class PdfParser:
             if para:
                 blocks.append(TextBlock(type="text", text=para, page_no=page.number + 1))
         return blocks
+
+    @staticmethod
+    def _is_duplicate_page_table(table_text: str, page_text: str) -> bool:
+        """Ignore a page-sized layout table that repeats the PDF text layer."""
+        def compact(value: str) -> str:
+            return re.sub(r"[|｜【】\s:：;；_\-]+", "", value or "")
+
+        page = compact(page_text)
+        table = compact(table_text.replace("【表】", ""))
+        if not page or len(table) < len(page) * 0.75:
+            return False
+        return SequenceMatcher(None, page, table, autojunk=False).ratio() >= 0.85
 
     def _extract_tables(self, page) -> List[str]:
         """表格 → Markdown（保留表头，docs/04 §3.3）。识别失败时返回空，不阻断。"""

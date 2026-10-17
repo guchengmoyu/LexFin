@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import math
 from collections import Counter
 from typing import List, Tuple
 
@@ -39,17 +40,18 @@ class Cleaner:
         head_counter: Counter[str] = Counter()
         tail_counter: Counter[str] = Counter()
         for page in pages:
-            texts = [self._normalize(b.text) for b in page.blocks if b.text.strip()]
+            texts = [self._normalize(line) for b in page.blocks for line in b.text.splitlines() if line.strip()]
             if not texts:
                 continue
-            head_counter[texts[0]] += 1
-            tail_counter[texts[-1]] += 1
+            head_counter.update(set(texts[:3]))
+            tail_counter.update(set(texts[-3:]))
 
-        threshold = max(1, int(len(pages) * HEADER_FOOTER_PAGE_RATIO))
+        threshold = max(2, math.ceil(len(pages) * HEADER_FOOTER_PAGE_RATIO))
         result: set[str] = set()
         for counter in (head_counter, tail_counter):
             for text, cnt in counter.items():
-                if cnt >= threshold and 0 < len(text) < HEADER_FOOTER_MAX_LEN:
+                if (cnt >= threshold and 0 < len(text) < HEADER_FOOTER_MAX_LEN
+                        and not re.match(r"^第[零〇一二三四五六七八九十百千万0-9]+[章节条]", text)):
                     result.add(text)
         return result
 
@@ -85,6 +87,9 @@ class Cleaner:
         if not out:
             return line
         prev = out.pop()
+        # Preserve legal heading/article boundaries before joining wrapped prose.
+        if re.match(r"^第[零〇一二三四五六七八九十百千万0-9]+[章节条]", line):
+            return prev + "\n" + line
         if prev.endswith("-") and re.match(r"^[a-zA-Z]", line):
             return prev[:-1] + line  # 英文连字符断行
         if prev and prev[-1] not in "。！？；：,.;:!?）)]】》\"'" and line and line[0] not in "（(【《\"'":

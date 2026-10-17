@@ -441,6 +441,13 @@ class QaService:
         """
         if not items:
             return build_refusal_answer(question)
+        # Optional calibrated gate for vector-only evidence. Keyword/structured
+        # evidence keeps its separate contract; no uncalibrated default cutoff.
+        threshold = settings.qa_min_vector_similarity
+        if threshold > 0 and not any(item.keyword_rank is not None for item in items):
+            similarities = [item.vector_similarity for item in items if item.vector_similarity is not None]
+            if not similarities or max(similarities) < threshold:
+                return build_refusal_answer(question)
         normalized_top1 = items[0].score / (settings.rrf_ref or 0.03)
         if normalized_top1 < settings.retrieval_min_score:
             return build_refusal_answer(question)

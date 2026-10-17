@@ -76,6 +76,7 @@ class RetrievedItem:
     score: float = 0.0  # RRF 融合分
     vector_rank: Optional[int] = None
     keyword_rank: Optional[int] = None
+    vector_similarity: Optional[float] = None  # Raw metric score, distinct from RRF rank score.
 
     @property
     def key(self) -> str:

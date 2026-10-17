@@ -103,8 +103,8 @@ def get_embedder() -> Embedder:
                     _embedder = LocalBgeEmbedder()
                 logger.info("Embedding 装配完成 provider={} model={}", provider, settings.embedding_model)
             except Exception as exc:
-                logger.error("Embedding 模型加载失败，降级为 FakeEmbedder: {}", exc)
-                _embedder = FakeEmbedder()
+                logger.exception("Embedding 模型加载失败，拒绝使用错误向量继续入库: {}", exc)
+                raise
     return _embedder
 
 

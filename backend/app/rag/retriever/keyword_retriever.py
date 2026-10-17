@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence
 
 from loguru import logger
-from sqlalchemy import text as sql_text
+from sqlalchemy import bindparam, text as sql_text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -42,11 +42,14 @@ KP_SQL = sql_text(
     SELECT k.id AS source_id, k.primary_document_id AS document_id, k.kb_id,
            k.article_no, k.title, k.content, k.doc_no, k.issuing_authority,
            k.timeliness, k.category, k.primary_chunk_id,
+           d.title AS doc_title,
            YEAR(k.effective_date) AS publish_year,
            MATCH(k.title, k.content, k.keywords) AGAINST (:q IN NATURAL LANGUAGE MODE)
            + IF(k.title LIKE CONCAT('%', :raw, '%'), 5, 0) AS score
     FROM knowledge_point k
+    LEFT JOIN document d ON d.id = k.primary_document_id
     WHERE k.status = 'published'
+      AND k.verify_status = 'passed'
       AND MATCH(k.title, k.content, k.keywords) AGAINST (:q IN NATURAL LANGUAGE MODE)
       {kb_filter}
     ORDER BY score DESC
@@ -116,7 +119,7 @@ def _row_to_chunk_item(row: Any, rank: int) -> RetrievedItem:
         chunk_index=int(row.chunk_index or -1),
         content=row.content or "",
         raw_content=row.raw_content or "",
-        doc_title=row.doc_title,
+        doc_title=getattr(row, "doc_title", None),
         doc_no=row.doc_no,
         issuing_authority=row.issuing_authority,
         publish_year=int(row.publish_year or 0),
@@ -165,12 +168,12 @@ def search_keyword(
     # 2) FULLTEXT 主通道
     kb_sql, kb_params = _kb_filter(kb_ids)
     chunk_rows = db.execute(
-        CHUNK_SQL.format(kb_filter=kb_sql),
+        sql_text(CHUNK_SQL.text.format(kb_filter=kb_sql)),
         {"q": q, "limit": limit, **kb_params},
     ).fetchall()
     kp_sql, kp_params = _kb_filter_kp(kb_ids)
     kp_rows = db.execute(
-        KP_SQL.format(kb_filter=kp_sql),
+        sql_text(KP_SQL.text.format(kb_filter=kp_sql)),
         {"q": q, "raw": raw, "limit": limit, **kp_params},
     ).fetchall()
 
@@ -197,7 +200,6 @@ def search_keyword(
         if it.key not in seen:
             seen[it.key] = it
     merged = list(seen.values())
-    merged.sort(key=lambda x: (-(x.keyword_rank or 0)))
     for i, it in enumerate(merged, 1):
         it.keyword_rank = i
     return merged
@@ -213,7 +215,8 @@ def _clue_search(
     doc_nos = query_info.doc_nos or [""]
     kb_sql, kb_params = _kb_filter(kb_ids)
     rows = db.execute(
-        CLUE_CHUNK_SQL.format(kb_filter=kb_sql),
+        sql_text(CLUE_CHUNK_SQL.text.format(kb_filter=kb_sql)).bindparams(
+            bindparam("article_nos", expanding=True), bindparam("doc_nos", expanding=True)),
         {
             "article_nos": tuple(article_nos),
             "doc_nos": tuple(doc_nos),
@@ -239,7 +242,7 @@ def _like_fallback(
     kb_sql, kb_params = _kb_filter(kb_ids)
     params.update(kb_params)
     rows = db.execute(
-        LIKE_CHUNK_SQL.format(like_cond=" OR ".join(conds), kb_filter=kb_sql),
+        sql_text(LIKE_CHUNK_SQL.text.format(like_cond=" OR ".join(conds), kb_filter=kb_sql)),
         params,
     ).fetchall()
     return [_row_to_chunk_item(r, i) for i, r in enumerate(rows, 1)]

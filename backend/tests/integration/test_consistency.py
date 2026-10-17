@@ -46,6 +46,7 @@ async def test_knowledge_point_vectors_exist(db_session):
     embedded = db_session.scalars(
         select(KnowledgePoint).where(KnowledgePoint.embedding_status == 1)
     ).all()
+    assert embedded, "集成测试必须包含至少一个已向量化知识点"
     missing = [
         kp.id
         for kp in embedded

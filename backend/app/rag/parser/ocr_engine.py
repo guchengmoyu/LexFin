@@ -70,7 +70,7 @@ class OcrEngine:
         if cache_path and cache_path.exists():
             try:
                 cached = json.loads(cache_path.read_text(encoding="utf-8"))
-                if cached.get("lang") == self.lang:
+                if cached.get("lang") == self.lang and cached.get("format_version") == 2:
                     return cached["paragraphs"], cached["avg_conf"]
             except Exception:
                 pass
@@ -102,7 +102,7 @@ class OcrEngine:
                 current_line = None
             line_key = data["line_num"][i]
             if current_words and line_key != current_line:
-                current_words.append("")  # 换行占位
+                current_words.append("\n")  # 保留条文行边界
             current_line = line_key
             current_words.append(word)
         if current_words:
@@ -116,7 +116,7 @@ class OcrEngine:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cache_path.write_text(
                     json.dumps(
-                        {"lang": self.lang, "paragraphs": paragraphs, "avg_conf": avg_conf},
+                        {"lang": self.lang, "format_version": 2, "paragraphs": paragraphs, "avg_conf": avg_conf},
                         ensure_ascii=False,
                     ),
                     encoding="utf-8",

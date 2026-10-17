@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import csv
 import io
+import re
+import unicodedata
+from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import func, or_, select
@@ -215,21 +218,43 @@ class KnowledgePointService:
         duplicates: List[dict] = []
         preview: List[dict] = []
         valid_rows: List[dict] = []
+        seen_codes = set()
+        kb = db.get(KnowledgeBase, kb_id)
+        if kb is None:
+            raise BizError(ErrorCode.NOT_FOUND, "知识库不存在")
 
         for i, row in enumerate(rows, start=2):  # 第 1 行为表头
+            exists = None
             err = self._validate_import_row(row)
             if err:
                 errors.append({"row": i, "field": err[0], "message": err[1]})
                 continue
             code = (row.get("code") or "").strip()
+            if row.get("category") != kb.category:
+                errors.append({"row": i, "field": "category", "message": "分类与目标知识库不一致"})
+                continue
+            if code and code in seen_codes:
+                errors.append({"row": i, "field": "code", "message": "文件内编号重复"})
+                continue
+            if code:
+                seen_codes.add(code)
             if code:
                 exists = db.scalar(select(KnowledgePoint).where(KnowledgePoint.code == code))
                 if exists is not None:
+                    if exists.kb_id != kb_id:
+                        errors.append({"row": i, "field": "code", "message": "编号属于其他知识库，禁止覆盖"})
+                        continue
                     duplicates.append(
                         {"row": i, "code": code, "message": "编号已存在，将被更新"}
                     )
+            try:
+                row["_source_chunk"] = self._resolve_import_source(db, kb_id, row)
+            except ValueError as exc:
+                errors.append({"row": i, "field": "source", "message": str(exc)})
+                continue
+            row["_row_number"] = i
             valid_rows.append(row)
-            preview.append({"row": i, "title": row.get("title"), "action": "create" if not code else "update"})
+            preview.append({"row": i, "title": row.get("title"), "action": "update" if exists is not None else "create"})
 
         result = {
             "dry_run": dry_run,
@@ -242,18 +267,25 @@ class KnowledgePointService:
         if dry_run:
             return result
 
-        created = updated = skipped = 0
+        created = updated = skipped = vector_failed = 0
         for row in valid_rows:
             try:
-                self._upsert_import_row(db, user, kb_id, row)
-                if (row.get("code") or "").strip():
+                code = (row.get("code") or "").strip()
+                existed = bool(code and db.scalar(select(KnowledgePoint.id).where(KnowledgePoint.code == code)))
+                with db.begin_nested():
+                    imported = self._upsert_import_row(db, user, kb_id, row)
+                    if imported.embedding_status != 1:
+                        vector_failed += 1
+                if existed:
                     updated += 1
                 else:
                     created += 1
-            except Exception:
+            except Exception as exc:
                 skipped += 1
+                errors.append({"row": row["_row_number"], "field": "import", "message": str(exc)[:200]})
         db.commit()
-        result.update({"created": created, "updated": updated, "skipped": skipped})
+        result.update({"created": created, "updated": updated, "skipped": skipped,
+                       "vector_failed": vector_failed, "errors": errors[:100]})
         return result
 
     def export(self, db: Session, kb_id: Optional[int]) -> List[dict]:
@@ -297,6 +329,7 @@ class KnowledgePointService:
                 "page_no": s.page_no,
                 "article_no": s.article_no,
                 "quote_text": s.quote_text,
+                "source_url": s.source_url,
                 "is_primary": s.is_primary,
             }
             for s in rows
@@ -611,12 +644,43 @@ class KnowledgePointService:
                     }
                 ]
             )
+            kp.embedding_status = 1
         except Exception as exc:  # 向量失败不阻断知识点维护，可重新保存触发重建
             from loguru import logger
 
             logger.warning("知识点 {} 向量化失败: {}", kp.id, exc)
+            kp.embedding_status = 2
 
     # ------------------------------------------------------------ 导入细节
+    @staticmethod
+    def _normalize_quote(value: str) -> str:
+        return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value or ""))
+
+    def _resolve_import_source(self, db: Session, kb_id: int, row: dict):
+        """Only bind a unique exact quote in the named uploaded document."""
+        filename = (row.get("source_file") or "").strip()
+        quote = row.get("quote_text") or ""
+        if not filename and not quote:
+            return None
+        if not filename or not quote:
+            raise ValueError("source_file和quote_text必须同时提供")
+        docs = db.scalars(select(Document).where(Document.kb_id == kb_id,
+            Document.file_name == filename, Document.status == "ready")).all()
+        if len(docs) != 1:
+            raise ValueError("来源文件未入库或版本不唯一")
+        candidates = db.scalars(select(DocumentChunk).where(DocumentChunk.document_id == docs[0].id)).all()
+        normalized = self._normalize_quote(quote)
+        matches = [chunk for chunk in candidates if normalized in self._normalize_quote(chunk.raw_content)]
+        if len(matches) != 1:
+            raise ValueError(f"原文引用匹配到{len(matches)}个切片，需人工确认")
+        try:
+            page = int(row.get("page_no") or matches[0].page_start)
+        except (ValueError, TypeError):
+            raise ValueError("页码必须为整数")
+        if not matches[0].page_start <= page <= matches[0].page_end:
+            raise ValueError("引用页码不在来源切片范围")
+        return matches[0]
+
     @staticmethod
     def _parse_import_file(file_name: str, data: bytes) -> List[dict]:
         name = file_name.lower()
@@ -634,7 +698,9 @@ class KnowledgePointService:
             out = []
             for row in rows_iter:
                 out.append(
-                    {header[i]: (str(row[i]).strip() if row[i] is not None else "")
+                    {header[i]: (row[i].strftime("%Y-%m-%d")
+                                 if header[i] in {"effective_date", "expiry_date"} and isinstance(row[i], (date, datetime))
+                                 else str(row[i]).strip() if row[i] is not None else "")
                      for i in range(min(len(header), len(row)))}
                 )
             return out
@@ -656,9 +722,29 @@ class KnowledgePointService:
         sub = (row.get("sub_category") or "").strip()
         if sub and sub not in CATEGORY_SUB[category]:
             return "sub_category", f"子分类不属于 {category} 的合法取值"
+        if row.get("verify_status") and row["verify_status"] not in {"pending", "passed", "doubted", "rejected"}:
+            return "verify_status", "非法审核状态"
+        if row.get("status") and row["status"] not in {"draft", "published", "archived"}:
+            return "status", "非法发布状态"
+        if row.get("timeliness") and row["timeliness"] not in {"effective", "amended", "repealed", "unknown"}:
+            return "timeliness", "非法时效状态"
+        for field in ("effective_date", "expiry_date"):
+            value = (row.get(field) or "").strip()
+            if value:
+                from app.utils.time import parse_date
+                if parse_date(value) is None:
+                    return field, "日期格式无法识别，应为 YYYY-MM-DD"
+        try:
+            difficulty = int(row.get("difficulty") or 1)
+        except (TypeError, ValueError):
+            return "difficulty", "难度必须为 1~3 的整数"
+        if not 1 <= difficulty <= 3:
+            return "difficulty", "难度必须为 1~3 的整数"
+        if row.get("status") == "published" and row.get("verify_status") != "passed":
+            return "status", "只有 verify_status=passed 才能发布"
         return None
 
-    def _upsert_import_row(self, db: Session, user: User, kb_id: int, row: dict) -> None:
+    def _upsert_import_row(self, db: Session, user: User, kb_id: int, row: dict) -> KnowledgePoint:
         from app.utils.time import parse_date
 
         code = (row.get("code") or "").strip()
@@ -677,12 +763,13 @@ class KnowledgePointService:
             "timeliness": row.get("timeliness") or "unknown",
             "keywords": row.get("keywords") or None,
             "difficulty": int(row.get("difficulty") or 1),
-            "status": row.get("status") or "published",
+            "status": row.get("status") or "draft",
+            "verify_status": row.get("verify_status") or "pending",
+            "verify_comment": row.get("review_note") or None,
         }
         if kp is None:
             kp = KnowledgePoint(
                 source_type="import",
-                verify_status="pending",
                 created_by=user.id,
                 created_at=now(),
                 updated_at=now(),
@@ -695,6 +782,27 @@ class KnowledgePointService:
             for key, value in fields.items():
                 setattr(kp, key, value)
             kp.updated_at = now()
+        chunk = row.get("_source_chunk")
+        if chunk is not None:
+            source = db.scalar(select(KnowledgePointSource).where(
+                KnowledgePointSource.knowledge_point_id == kp.id,
+                KnowledgePointSource.chunk_id == chunk.id))
+            if source is None:
+                source = KnowledgePointSource(knowledge_point_id=kp.id, chunk_id=chunk.id,
+                    document_id=chunk.document_id, created_at=now())
+                db.add(source)
+            source.quote_text = row.get("quote_text")
+            source.source_url = row.get("source_url") or None
+            source.page_no = int(row.get("page_no") or chunk.page_start)
+            source.article_no = row.get("article_no") or chunk.article_no
+            source.is_primary = 1
+            kp.primary_document_id = chunk.document_id
+            kp.primary_chunk_id = chunk.id
+        # Keep the imported record searchable using the same vector contract
+        # as document chunks. Source binding is handled separately because a
+        # spreadsheet page/article reference may match multiple chunks.
+        self._index_kp(kp)
+        return kp
 
 
 knowledge_point_service = KnowledgePointService()

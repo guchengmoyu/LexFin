@@ -17,6 +17,7 @@ async def test_retrieve_hybrid_shape(auth_client):
     assert r.status_code == 200
     data = r.json()["data"]
     assert data["mode"] == "hybrid"
+    assert data["items"], "Sample corpus must be retrieved"
     assert "latency_ms" in data
     for i, item in enumerate(data["items"], start=1):
         assert item["rank"] == i
@@ -31,6 +32,7 @@ async def test_retrieve_keyword_mode_vector_rank_none(auth_client):
         f"{API}/retrieve", json={"query": "流动性覆盖率", "mode": "keyword", "top_k": 5}
     )
     assert r.status_code == 200
+    assert r.json()["data"]["items"], "Keyword retrieval must hit sample corpus"
     for item in r.json()["data"]["items"]:
         assert item["vector_rank"] is None
         assert item["keyword_rank"] is not None
@@ -41,6 +43,7 @@ async def test_retrieve_vector_mode(auth_client):
         f"{API}/retrieve", json={"query": "流动性覆盖率", "mode": "vector", "top_k": 5}
     )
     assert r.status_code == 200
+    assert r.json()["data"]["items"], "Vector retrieval must hit sample corpus"
     for item in r.json()["data"]["items"]:
         assert item["keyword_rank"] is None
         assert item["vector_rank"] is not None
@@ -51,9 +54,15 @@ async def test_search_highlight_escapes_xss(auth_client):
     evil = "<script>alert(1)</script> 流动性覆盖率"
     r = await auth_client.get(f"{API}/search", params={"q": evil, "highlight": True})
     assert r.status_code == 200
-    text = r.text
-    assert "<script>alert(1)</script>" not in text
-    assert "&lt;script&gt;" in text or "items" in text
+    data = r.json()["data"]
+    assert data["query"] == evil  # JSON echo is plain text, not rendered HTML.
+    for item in data["items"]:
+        assert "<script>" not in (item.get("highlight") or "")
+    # Cover escaping even when the isolated search corpus has no hits.
+    from app.services.retrieval import highlight_text
+    rendered = highlight_text(evil, ["流动性覆盖率"])
+    assert "<script>" not in rendered
+    assert "&lt;script&gt;" in rendered
 
 
 async def test_search_pagination_shape(auth_client):
