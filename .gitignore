@@ -18,6 +18,7 @@ data/raw/
 data/ocr_cache/
 data/ocr_output/
 data/tmp/
+data/runtime/
 deploy/data/
 volumes/
 deploy/volumes/
