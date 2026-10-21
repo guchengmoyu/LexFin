@@ -44,6 +44,11 @@ data/metadata/*
 !data/knowledge_points/
 data/knowledge_points/*
 !data/knowledge_points/knowledge_points_candidates.xlsx
+!data/knowledge_points/review_assignments/
+data/knowledge_points/review_assignments/*
+!data/knowledge_points/review_assignments/成员1_知识点审核_已修订.xlsx
+!data/knowledge_points/review_assignments/成员2_知识点审核_待导入.xlsx
+!data/knowledge_points/新增九份制度_知识点审核_2026-10-17.xlsx
 
 # ---- Python ----
 __pycache__/
