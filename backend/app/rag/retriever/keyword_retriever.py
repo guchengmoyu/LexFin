@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import unicodedata
 from typing import Any, Dict, List, Optional, Sequence
 
 from loguru import logger
@@ -192,6 +193,11 @@ def search_keyword(
         if ratio > 0.3:
             logger.warning("关键词检索降级比例 > 30%，分词策略需要调整")
 
+    # ngram natural-language queries are OR-based. Keep a candidate only when
+    # its text supports at least one non-overlapping, substantive query term.
+    core_terms = _core_query_terms(query_info.keywords)
+    if core_terms:
+        fulltext_hits = [item for item in fulltext_hits if _has_core_term(item, core_terms)]
     items.extend(fulltext_hits)
 
     # 按唯一键去重（线索命中优先保留）
@@ -203,6 +209,26 @@ def search_keyword(
     for i, it in enumerate(merged, 1):
         it.keyword_rank = i
     return merged
+
+
+def _core_query_terms(keywords: Sequence[str]) -> list[str]:
+    normalized = list(dict.fromkeys(
+        unicodedata.normalize("NFKC", word).casefold().strip()
+        for word in keywords if word and word.strip()
+    ))
+    return [
+        word for word in normalized
+        if len(word) >= 3
+        and not any(word != other and word in other and len(other) > len(word)
+                    for other in normalized)
+    ]
+
+
+def _has_core_term(item: RetrievedItem, terms: Sequence[str]) -> bool:
+    text = unicodedata.normalize(
+        "NFKC", " ".join((item.title or "", item.raw_content or item.content or "", item.doc_title or ""))
+    ).casefold()
+    return any(term in text for term in terms)
 
 
 def _clue_search(
