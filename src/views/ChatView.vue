@@ -1,49 +1,96 @@
-<script setup>
-import { nextTick, onMounted, reactive, ref } from 'vue'
+<script setup lang="ts">
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Promotion, Star, StarFilled, VideoPause } from '@element-plus/icons-vue'
 import { qaApi, documentApi, feedbackApi, favoriteApi } from '../api'
 import { streamAsk } from '../api/sse'
 import { useKbStore } from '../stores/kb'
+import type {
+  Citation,
+  FeedbackReason,
+  QaDoneEvent,
+  QaMetaEvent,
+  RetrieveMode,
+  SessionSummary,
+} from '../types'
 
 const kbStore = useKbStore()
+const route = useRoute()
+const router = useRouter()
+
+// ---------------------------------------------------------------- 类型
+/** 消息视图模型：会话消息叠加本地流式/反馈状态；后端字段不确定处保持宽松 */
+interface ChatItem {
+  id: number | string
+  role: 'user' | 'assistant'
+  content: string
+  citations: Citation[]
+  done: QaDoneEvent | null
+  error: string | null
+  streaming: boolean
+  retrieved?: boolean
+  favorited?: boolean
+  feedbackRating?: number | null
+  createdAt?: string
+  startedAt?: number
+}
+
+interface ContentSeg {
+  badge?: number
+  text?: string
+}
 
 // ---------------------------------------------------------------- 状态
-const sessions = ref([])
-const currentSessionNo = ref(null)
-const messages = ref([])
+const sessions = ref<SessionSummary[]>([])
+const currentSessionNo = ref<string | null>(null)
+const messages = ref<ChatItem[]>([])
 const question = ref('')
 const sending = ref(false)
 const loadingSession = ref(false)
 const sessionsLoading = ref(false)
 
 const settings = reactive({
-  kbIds: [],
-  mode: 'hybrid',
+  kbIds: [] as number[],
+  mode: 'hybrid' as RetrieveMode,
   topK: 5,
   useHistory: true,
 })
 
-let controller = null
-const messagesEl = ref(null)
-const taRef = ref(null)
-const highlightCitation = ref(null)
+let controller: AbortController | null = null
+const messagesEl = ref<HTMLElement | null>(null)
+const highlightCitation = ref<{ msgId: number | string; index: number } | null>(null)
 
-const EXAMPLES = [
+// 右侧证据面板（docs/07 §4.1）：宽 380px，可折叠
+const evidenceOpen = ref(true)
+const evidenceMsgId = ref<number | string | null>(null)
+const evidenceMsg = computed<ChatItem | null>(() => {
+  const own = messages.value.find((m) => m.id === evidenceMsgId.value && m.citations?.length)
+  if (own) return own
+  for (let i = messages.value.length - 1; i >= 0; i -= 1) {
+    const m = messages.value[i]
+    if (m.role === 'assistant' && m.citations?.length) return m
+  }
+  return null
+})
+
+const EXAMPLES: string[] = [
   '商业银行资本管理办法中核心一级资本充足率的最低要求是多少？',
   '流动性覆盖率的监管标准是什么？',
   '理财产品的销售新规有哪些要点？',
 ]
 
-const TIMELINESS_MAP = {
-  effective: { label: '现行有效', cls: 'green' },
-  amended: { label: '已修订', cls: 'yellow' },
-  unknown: { label: '时效未知', cls: 'gray' },
-  repealed: { label: '已废止', cls: 'red' },
+const TIMELINESS_MAP: Record<string, { label: string; type: 'success' | 'warning' | 'info' | 'danger' }> = {
+  effective: { label: '现行有效', type: 'success' },
+  amended: { label: '已修订', type: 'warning' },
+  unknown: { label: '时效未知', type: 'info' },
+  repealed: { label: '已废止', type: 'danger' },
 }
 
-const CONF_MAP = {
-  high: { label: '可信度高', cls: 'green' },
-  medium: { label: '可信度中', cls: 'yellow' },
-  low: { label: '可信度低', cls: 'red' },
+const CONF_MAP: Record<string, { label: string; type: 'success' | 'warning' | 'info' | 'danger' }> = {
+  high: { label: '可信度高', type: 'success' },
+  medium: { label: '可信度中', type: 'warning' },
+  low: { label: '可信度低', type: 'danger' },
 }
 
 // ---------------------------------------------------------------- 工具
@@ -54,7 +101,7 @@ function scrollBottom() {
   })
 }
 
-function parseContent(content) {
+function parseContent(content: string | null | undefined): ContentSeg[] {
   // [n] 角标 → 可点击标记；越界角标后端已过滤，但渲染层只点亮存在的引用
   return String(content || '')
     .split(/(\[\d{1,2}\])/g)
@@ -64,7 +111,9 @@ function parseContent(content) {
     })
 }
 
-function onBadgeClick(msg, n) {
+function onBadgeClick(msg: ChatItem, n: number) {
+  evidenceOpen.value = true
+  evidenceMsgId.value = msg.id
   highlightCitation.value = null
   nextTick(() => {
     highlightCitation.value = { msgId: msg.id, index: n }
@@ -73,17 +122,23 @@ function onBadgeClick(msg, n) {
   })
 }
 
-function citationDoc(meta) {
+function onEvidenceClick(c: any) {
+  const msg = evidenceMsg.value
+  if (!msg) return
+  onBadgeClick(msg, c.cite_index)
+}
+
+function citationDoc(meta: any): string {
   if (meta.knowledge_point_id) return `知识点 KP-${meta.knowledge_point_id}`
   return meta.doc_title || '未知文档'
 }
 
-async function downloadCitation(c) {
+async function downloadCitation(c: any) {
   if (!c.document_id) return
   try {
     await documentApi.download(c.document_id, `${c.doc_title || 'document'}.pdf`)
-  } catch (e) {
-    alert(e.message || '下载失败')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '下载失败')
   }
 }
 
@@ -104,15 +159,22 @@ function newChat() {
   if (sending.value) return
   currentSessionNo.value = null
   messages.value = []
+  evidenceMsgId.value = null
+  if (route.name === 'chat-session') router.replace({ name: 'chat' })
 }
 
-async function openSession(s) {
+async function openSession(s: SessionSummary) {
   if (sending.value || s.session_no === currentSessionNo.value) return
+  await loadSessionNo(s.session_no)
+}
+
+/** 会话回看（/chat/:sessionNo 直达或侧栏点击共用） */
+async function loadSessionNo(sessionNo: string) {
   loadingSession.value = true
   try {
-    const data = await qaApi.sessionDetail(s.session_no)
-    currentSessionNo.value = s.session_no
-    messages.value = (data.messages || data.items || []).map((m) => ({
+    const data = await qaApi.sessionDetail(sessionNo)
+    currentSessionNo.value = sessionNo
+    messages.value = ((data.messages || data.items || []) as any[]).map((m): ChatItem => ({
       id: m.message_id,
       role: m.role,
       content: m.content || '',
@@ -129,31 +191,44 @@ async function openSession(s) {
       streaming: false,
       error: null,
       favorited: !!m.favorited,
+      feedbackRating: m.feedback?.rating ?? null,
       createdAt: m.created_at,
     }))
+    const lastAssistant = [...messages.value].reverse().find((m) => m.role === 'assistant')
+    evidenceMsgId.value = lastAssistant?.id ?? null
     scrollBottom()
-  } catch (e) {
-    alert(e.message || '加载会话失败')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '加载会话失败')
   } finally {
     loadingSession.value = false
   }
 }
 
-async function removeSession(s) {
-  if (!confirm(`删除会话「${s.title || s.session_no}」？`)) return
+function syncSessionRoute() {
+  if (!currentSessionNo.value) return
+  if (currentSessionNo.value === route.params.sessionNo) return
+  router.replace({ name: 'chat-session', params: { sessionNo: currentSessionNo.value } })
+}
+
+async function removeSession(s: SessionSummary) {
+  const ok = await ElMessageBox
+    .confirm(`删除会话「${s.title || s.session_no}」？`, '提示', { type: 'warning' })
+    .then(() => true)
+    .catch(() => false)
+  if (!ok) return
   try {
     await qaApi.deleteSession(s.session_no)
     if (s.session_no === currentSessionNo.value) newChat()
     await loadSessions()
-  } catch (e) {
-    alert(e.message || '删除失败')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '删除失败')
   }
 }
 
 // ---------------------------------------------------------------- 问答
-function newPlaceholder() {
+function newPlaceholder(): ChatItem {
   const id = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const msg = reactive({
+  const msg = reactive<ChatItem>({
     id,
     role: 'assistant',
     content: '',
@@ -169,11 +244,11 @@ function newPlaceholder() {
   return msg
 }
 
-async function send(text) {
+async function send(text?: string) {
   const q = (text ?? question.value).trim()
   if (!q || sending.value) return
   if (q.length > 500) {
-    alert('问题最多 500 字')
+    ElMessage.warning('问题最多 500 字')
     return
   }
 
@@ -181,44 +256,47 @@ async function send(text) {
   messages.value.push({ id: `u-${Date.now()}`, role: 'user', content: q, citations: [], done: null, error: null, streaming: false })
   const assistant = newPlaceholder()
   sending.value = true
-  controller = new AbortController()
+  const ctrl = new AbortController()
+  controller = ctrl
 
   await streamAsk(
     {
       question: q,
-      session_no: currentSessionNo.value,
+      session_no: currentSessionNo.value || undefined,
       kb_ids: settings.kbIds.length ? settings.kbIds : undefined,
       mode: settings.mode,
       top_k: settings.topK,
       use_history: settings.useHistory,
     },
     {
-      onMeta(data) {
+      onMeta(data: QaMetaEvent) {
         assistant.retrieved = true
         assistant.citations = data.citations || []
         if (data.message_id) assistant.id = data.message_id
         if (data.session_no) currentSessionNo.value = data.session_no
+        evidenceMsgId.value = assistant.id
         scrollBottom()
       },
-      onToken(delta) {
+      onToken(delta: string) {
         assistant.content += delta
         scrollBottom()
       },
-      onDone(data) {
+      onDone(data: QaDoneEvent) {
         assistant.done = data
         assistant.streaming = false
         sending.value = false
         controller = null
+        syncSessionRoute()
         loadSessions()
       },
-      onError(e) {
+      onError(e: any) {
         assistant.error = e?.message || '生成失败'
         assistant.streaming = false
         sending.value = false
         controller = null
       },
     },
-    controller,
+    ctrl,
   )
   // 客户端中断时也结束流式态
   if (assistant.streaming) {
@@ -232,8 +310,9 @@ function stopStream() {
   controller?.abort()
 }
 
-function onKeydown(e) {
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+function onKeydown(e: KeyboardEvent) {
+  if (e.isComposing) return
+  if (e.key === 'Enter' && (e.ctrlKey || !e.shiftKey)) {
     e.preventDefault()
     send()
   }
@@ -241,26 +320,26 @@ function onKeydown(e) {
 
 // ---------------------------------------------------------------- 反馈与收藏
 const feedbackDlg = ref(false)
-const feedbackTarget = ref(null)
-const feedbackForm = reactive({ reason: '', comment: '' })
-const FEEDBACK_REASONS = [
-  { value: 'retrieval_miss', label: '检索未命中' },
-  { value: 'hallucination', label: '内容编造' },
-  { value: 'citation_wrong', label: '引用错误' },
-  { value: 'outdated', label: '条文过时' },
+const feedbackTarget = ref<ChatItem | null>(null)
+const feedbackForm = reactive<{ reason: FeedbackReason | ''; comment: string }>({ reason: '', comment: '' })
+const FEEDBACK_REASONS: { value: FeedbackReason; label: string }[] = [
+  { value: 'inaccurate', label: '答案不准确' },
   { value: 'incomplete', label: '答案不完整' },
+  { value: 'outdated', label: '条文过时' },
+  { value: 'wrong_citation', label: '引用错误' },
+  { value: 'other', label: '其他' },
 ]
 
-async function submitFeedback(msg, rating) {
+async function submitFeedback(msg: ChatItem, rating: number) {
   try {
     await feedbackApi.submit(msg.id, { rating })
     msg.feedbackRating = rating
-  } catch (e) {
-    alert(e.message || '反馈失败')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '反馈失败')
   }
 }
 
-function openFeedbackDlg(msg) {
+function openFeedbackDlg(msg: ChatItem) {
   feedbackTarget.value = msg
   feedbackForm.reason = ''
   feedbackForm.comment = ''
@@ -269,6 +348,7 @@ function openFeedbackDlg(msg) {
 
 async function submitNegativeFeedback() {
   const msg = feedbackTarget.value
+  if (!msg) return
   try {
     await feedbackApi.submit(msg.id, {
       rating: -1,
@@ -277,12 +357,12 @@ async function submitNegativeFeedback() {
     })
     msg.feedbackRating = -1
     feedbackDlg.value = false
-  } catch (e) {
-    alert(e.message || '反馈失败')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '反馈失败')
   }
 }
 
-async function toggleFavorite(msg) {
+async function toggleFavorite(msg: ChatItem) {
   try {
     if (msg.favorited) {
       await favoriteApi.remove(msg.id)
@@ -291,22 +371,15 @@ async function toggleFavorite(msg) {
       await favoriteApi.add(msg.id)
       msg.favorited = true
     }
-  } catch (e) {
-    alert(e.message || '操作失败')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '操作失败')
   }
-}
-
-
-function toggleKb(id) {
-  const i = settings.kbIds.indexOf(id)
-  if (i >= 0) settings.kbIds.splice(i, 1)
-  else if (settings.kbIds.length < 5) settings.kbIds.push(id)
-  else alert('最多选择 5 个知识库')
 }
 
 onMounted(() => {
   loadSessions()
   kbStore.ensureLoaded()
+  if (route.params.sessionNo) loadSessionNo(route.params.sessionNo as string)
 })
 </script>
 
@@ -314,7 +387,7 @@ onMounted(() => {
   <div class="chat-page">
     <!-- ============ 会话侧栏 ============ -->
     <aside class="session-panel">
-      <button class="btn new-chat" @click="newChat">＋ 新对话</button>
+      <el-button type="primary" class="new-chat" @click="newChat">＋ 新对话</el-button>
       <div v-if="sessionsLoading" class="empty-tip">加载中…</div>
       <div v-else-if="!sessions.length" class="empty-tip">暂无历史会话</div>
       <div v-else class="session-list">
@@ -330,13 +403,28 @@ onMounted(() => {
             <span>{{ s.message_count }} 条消息</span>
             <span>{{ s.last_active_at || '' }}</span>
           </div>
-          <button class="session-del" title="删除会话" @click.stop="removeSession(s)">✕</button>
+          <el-button
+            class="session-del"
+            link
+            type="danger"
+            size="small"
+            title="删除会话"
+            @click.stop="removeSession(s)"
+          >✕</el-button>
         </div>
       </div>
     </aside>
 
     <!-- ============ 主对话区 ============ -->
     <section class="chat-main">
+      <el-button
+        size="small"
+        round
+        class="evidence-toggle"
+        @click="evidenceOpen = !evidenceOpen"
+      >
+        {{ evidenceOpen ? '证据 »' : '« 证据' }}
+      </el-button>
       <div ref="messagesEl" class="messages">
         <!-- 空状态 -->
         <div v-if="!messages.length" class="welcome">
@@ -344,9 +432,9 @@ onMounted(() => {
           <h2>金融制度知识问答</h2>
           <p>基于混合检索与角标溯源，每条答案均可回溯至具体条文与页码</p>
           <div class="examples">
-            <button v-for="ex in EXAMPLES" :key="ex" class="example-card" @click="send(ex)">
+            <el-button v-for="ex in EXAMPLES" :key="ex" class="example-card" @click="send(ex)">
               {{ ex }}
-            </button>
+            </el-button>
           </div>
         </div>
 
@@ -401,11 +489,11 @@ onMounted(() => {
                     <span class="cite-idx">[{{ c.cite_index }}]</span>
                     <span class="cite-doc" :title="c.doc_title">{{ citationDoc(c) }}</span>
                     <span v-if="c.article_no" class="cite-article">{{ c.article_no }}</span>
-                    <span
+                    <el-tag
                       v-if="c.timeliness"
-                      class="tag"
-                      :class="TIMELINESS_MAP[c.timeliness]?.cls || 'gray'"
-                    >{{ TIMELINESS_MAP[c.timeliness]?.label || c.timeliness }}</span>
+                      size="small"
+                      :type="TIMELINESS_MAP[c.timeliness]?.type || 'info'"
+                    >{{ TIMELINESS_MAP[c.timeliness]?.label || c.timeliness }}</el-tag>
                   </div>
                   <div class="cite-snippet">{{ c.snippet }}</div>
                   <div class="cite-foot">
@@ -423,15 +511,16 @@ onMounted(() => {
 
               <!-- 完成态指标 -->
               <div v-if="msg.done && !msg.streaming" class="metrics">
-                <span
+                <el-tag
                   v-if="msg.done.confidence_level"
-                  class="tag"
-                  :class="CONF_MAP[msg.done.confidence_level]?.cls || 'gray'"
-                >{{ CONF_MAP[msg.done.confidence_level]?.label }} {{ ((msg.done.confidence ?? 0) * 100).toFixed(0) }}分</span>
-                <span
+                  size="small"
+                  :type="CONF_MAP[msg.done.confidence_level]?.type || 'info'"
+                >{{ CONF_MAP[msg.done.confidence_level]?.label }} {{ ((msg.done.confidence ?? 0) * 100).toFixed(0) }}分</el-tag>
+                <el-tag
                   v-if="msg.done.answer_type === 'refused'"
-                  class="tag yellow"
-                >知识库未命中，已拒答</span>
+                  size="small"
+                  type="warning"
+                >知识库未命中，已拒答</el-tag>
                 <span v-if="msg.done.latency_ms != null" class="metric-item">耗时 {{ (msg.done.latency_ms / 1000).toFixed(1) }}s</span>
                 <span v-if="msg.done.latency_detail?.retrieve != null" class="metric-item">检索 {{ msg.done.latency_detail.retrieve }}ms</span>
                 <span v-if="msg.done.model_name" class="metric-item">{{ msg.done.model_name }}</span>
@@ -440,34 +529,37 @@ onMounted(() => {
               <!-- 拒答建议检索词 -->
               <div v-if="msg.done?.suggestions?.length" class="suggestions">
                 <span class="sug-label">建议尝试：</span>
-                <button
+                <el-button
                   v-for="s in msg.done.suggestions"
                   :key="s"
+                  size="small"
+                  round
                   class="sug-chip"
                   @click="send(s)"
-                >{{ s }}</button>
+                >{{ s }}</el-button>
               </div>
 
               <!-- 反馈与收藏（仅真实消息 id，本地占位 id 不展示） -->
               <div v-if="msg.done && !msg.streaming && typeof msg.id === 'number'" class="msg-actions">
-                <button
-                  class="act-btn"
-                  :class="{ on: msg.feedbackRating === 1 }"
+                <el-button
+                  size="small"
+                  :type="msg.feedbackRating === 1 ? 'primary' : 'default'"
                   title="点赞"
                   @click="submitFeedback(msg, 1)"
-                >👍</button>
-                <button
-                  class="act-btn"
-                  :class="{ on: msg.feedbackRating === -1 }"
+                >👍</el-button>
+                <el-button
+                  size="small"
+                  :type="msg.feedbackRating === -1 ? 'primary' : 'default'"
                   title="点踩/纠错"
                   @click="openFeedbackDlg(msg)"
-                >👎</button>
-                <button
-                  class="act-btn"
-                  :class="{ on: msg.favorited }"
+                >👎</el-button>
+                <el-button
+                  size="small"
+                  :type="msg.favorited ? 'warning' : 'default'"
+                  :icon="msg.favorited ? StarFilled : Star"
                   title="收藏答案"
                   @click="toggleFavorite(msg)"
-                >{{ msg.favorited ? '★' : '☆' }}</button>
+                />
                 <span v-if="msg.feedbackRating === 1" class="act-tip">已点赞</span>
                 <span v-else-if="msg.feedbackRating === -1" class="act-tip">已反馈</span>
                 <span v-if="msg.favorited" class="act-tip">已收藏</span>
@@ -484,84 +576,123 @@ onMounted(() => {
         <div class="composer-settings">
           <div class="kb-picker">
             <span class="picker-label">知识库</span>
-            <button
-              v-for="kb in kbStore.list"
-              :key="kb.id"
-              class="kb-chip"
-              :class="{ on: settings.kbIds.includes(kb.id) }"
-              :title="kb.description || kb.name"
-              @click="toggleKb(kb.id)"
-            >{{ kb.name }}</button>
+            <el-select
+              v-model="settings.kbIds"
+              class="kb-select"
+              multiple
+              clearable
+              :multiple-limit="5"
+              placeholder="选择知识库（最多 5 个）"
+            >
+              <el-option
+                v-for="kb in kbStore.list"
+                :key="kb.id"
+                :label="kb.name"
+                :value="kb.id"
+                :title="kb.description || kb.name"
+              />
+            </el-select>
             <span v-if="!kbStore.list.length" class="picker-empty">未加载到知识库</span>
           </div>
           <div class="settings-right">
             <label class="picker-label">
               检索
-              <select v-model="settings.mode" class="mini-select">
-                <option value="hybrid">混合</option>
-                <option value="vector">向量</option>
-                <option value="keyword">关键词</option>
-              </select>
+              <el-select v-model="settings.mode" class="mini-select">
+                <el-option label="混合" value="hybrid" />
+                <el-option label="向量" value="vector" />
+                <el-option label="关键词" value="keyword" />
+              </el-select>
             </label>
             <label class="picker-label">
               引用数
-              <select v-model.number="settings.topK" class="mini-select">
-                <option v-for="n in [3, 5, 8, 10]" :key="n" :value="n">{{ n }}</option>
-              </select>
+              <el-select v-model="settings.topK" class="mini-select">
+                <el-option v-for="n in [3, 5, 8, 10]" :key="n" :label="String(n)" :value="n" />
+              </el-select>
             </label>
-            <label class="picker-label checkbox">
-              <input v-model="settings.useHistory" type="checkbox" /> 多轮
-            </label>
+            <el-checkbox v-model="settings.useHistory">多轮</el-checkbox>
           </div>
         </div>
 
         <div class="composer-input">
-          <textarea
-            ref="taRef"
+          <el-input
             v-model="question"
-            class="textarea"
-            rows="2"
-            placeholder="输入金融制度相关问题，Enter 发送 / Shift+Enter 换行（最多 500 字）"
+            type="textarea"
+            class="composer-textarea"
+            :autosize="{ minRows: 2, maxRows: 5 }"
+            :maxlength="500"
+            show-word-limit
+            placeholder="输入金融制度相关问题，Enter / Ctrl+Enter 发送，Shift+Enter 换行（最多 500 字）"
             :disabled="sending"
             @keydown="onKeydown"
           />
-          <button v-if="sending" class="btn stop-btn" @click="stopStream">
-            <span class="stop-icon" />停止
-          </button>
-          <button v-else class="btn send-btn" :disabled="!question.trim()" @click="send()">
+          <el-button v-if="sending" class="stop-btn" :icon="VideoPause" @click="stopStream">
+            停止
+          </el-button>
+          <el-button v-else type="primary" class="send-btn" :icon="Promotion" :disabled="!question.trim()" @click="send()">
             发送
-          </button>
+          </el-button>
         </div>
       </div>
     </section>
 
-    <!-- ============ 点踩反馈弹窗 ============ -->
-    <div v-if="feedbackDlg" class="modal-mask" @click.self="feedbackDlg = false">
-      <div class="modal feedback-modal">
-        <div class="modal-head">
-          <h3>答案纠错反馈</h3>
-          <button class="modal-close" @click="feedbackDlg = false">✕</button>
-        </div>
-        <div class="modal-body">
-          <label class="form-label">问题类型</label>
-          <select v-model="feedbackForm.reason" class="input">
-            <option value="">请选择（可不选）</option>
-            <option v-for="r in FEEDBACK_REASONS" :key="r.value" :value="r.value">{{ r.label }}</option>
-          </select>
-          <label class="form-label">补充说明</label>
-          <textarea
-            v-model="feedbackForm.comment"
-            class="input textarea"
-            rows="4"
-            placeholder="请描述答案存在的问题，帮助改进检索与生成质量（可选）"
-          />
-        </div>
-        <div class="modal-foot">
-          <button class="btn btn-ghost" @click="feedbackDlg = false">取消</button>
-          <button class="btn" @click="submitNegativeFeedback">提交反馈</button>
+    <!-- ============ 右侧证据面板 ============ -->
+    <aside v-if="evidenceOpen" class="evidence-panel">
+      <div class="evidence-head">
+        <span>本次回答参考条文</span>
+        <el-tag size="small" type="info">{{ evidenceMsg?.citations?.length || 0 }}</el-tag>
+      </div>
+      <div v-if="!evidenceMsg" class="empty-tip" style="padding: 24px 0">提问后将在此展示检索到的条文</div>
+      <div v-else class="evidence-list">
+        <div
+          v-for="c in evidenceMsg.citations"
+          :key="c.cite_index"
+          class="cite-card evidence-card"
+          :class="{
+            hl: highlightCitation && highlightCitation.msgId === evidenceMsg.id && highlightCitation.index === c.cite_index,
+            dim: evidenceMsg.done?.used_citations && !evidenceMsg.done.used_citations.includes(c.cite_index),
+          }"
+          @click="onEvidenceClick(c)"
+        >
+          <div class="cite-top">
+            <span class="cite-idx">[{{ c.cite_index }}]</span>
+            <span class="cite-doc" :title="c.doc_title">{{ citationDoc(c) }}</span>
+            <el-tag
+              v-if="evidenceMsg.done?.used_citations?.includes(c.cite_index)"
+              size="small"
+              type="success"
+            >已采用</el-tag>
+          </div>
+          <div v-if="c.article_no" class="evidence-article">{{ c.article_no }}</div>
+          <div class="cite-snippet">{{ c.snippet }}</div>
+          <div class="cite-foot">
+            <span v-if="c.page_no != null">第 {{ c.page_no }} 页</span>
+            <span v-if="c.timeliness">{{ TIMELINESS_MAP[c.timeliness]?.label || c.timeliness }}</span>
+            <a v-if="c.page_no != null" class="cite-page" href="javascript:;" @click.stop="downloadCitation(c)">
+              下载原文
+            </a>
+          </div>
         </div>
       </div>
-    </div>
+    </aside>
+
+    <!-- ============ 点踩反馈弹窗 ============ -->
+    <el-dialog v-model="feedbackDlg" title="答案纠错反馈" width="440px">
+      <div class="form-label">问题类型</div>
+      <el-select v-model="feedbackForm.reason" class="dialog-select" clearable placeholder="请选择（可不选）">
+        <el-option v-for="r in FEEDBACK_REASONS" :key="r.value" :label="r.label" :value="r.value" />
+      </el-select>
+      <div class="form-label">补充说明</div>
+      <el-input
+        v-model="feedbackForm.comment"
+        type="textarea"
+        :rows="4"
+        placeholder="请描述答案存在的问题，帮助改进检索与生成质量（可选）"
+      />
+      <template #footer>
+        <el-button @click="feedbackDlg = false">取消</el-button>
+        <el-button type="primary" @click="submitNegativeFeedback">提交反馈</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -634,21 +765,12 @@ onMounted(() => {
   right: 6px;
   top: 50%;
   transform: translateY(-50%);
-  border: none;
-  background: none;
-  color: var(--text-3);
-  cursor: pointer;
-  font-size: 12px;
   opacity: 0;
   transition: opacity 0.15s;
 }
 
 .session-item:hover .session-del {
   opacity: 1;
-}
-
-.session-del:hover {
-  color: var(--danger);
 }
 
 /* ---------------- 消息区 ---------------- */
@@ -658,6 +780,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  position: relative;
 }
 
 .messages {
@@ -706,21 +829,8 @@ onMounted(() => {
 }
 
 .example-card {
-  text-align: left;
-  padding: 12px 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  font-size: 13px;
-  color: var(--text-2);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.example-card:hover {
-  border-color: var(--primary);
-  color: var(--primary);
-  box-shadow: var(--shadow);
+  width: 100%;
+  justify-content: flex-start;
 }
 
 .row {
@@ -964,22 +1074,8 @@ onMounted(() => {
   color: var(--text-3);
 }
 
-.kb-chip {
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
-  border-radius: 999px;
-  padding: 3px 10px;
-  font-size: 12px;
-  color: var(--text-2);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.kb-chip.on {
-  background: var(--primary-soft);
-  border-color: var(--primary);
-  color: var(--primary);
-  font-weight: 500;
+.kb-picker .el-select {
+  max-width: 320px;
 }
 
 .settings-right {
@@ -989,17 +1085,7 @@ onMounted(() => {
 }
 
 .mini-select {
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  padding: 3px 6px;
-  font-size: 12px;
-  color: var(--text-2);
-  background: var(--surface);
-}
-
-.checkbox {
-  cursor: pointer;
-  user-select: none;
+  width: 88px;
 }
 
 .composer-input {
@@ -1008,34 +1094,14 @@ onMounted(() => {
   gap: 10px;
 }
 
-.composer-input .textarea {
+.composer-input :deep(.el-textarea) {
   flex: 1;
-  line-height: 1.6;
 }
 
 .send-btn {
   height: 58px;
   min-width: 84px;
   font-size: 15px;
-}
-
-.stop-btn {
-  height: 58px;
-  min-width: 84px;
-  background: var(--surface);
-  color: var(--danger);
-  border-color: #fca5a5;
-}
-
-.stop-btn:hover {
-  background: var(--danger-soft);
-}
-
-.stop-icon {
-  width: 10px;
-  height: 10px;
-  background: var(--danger);
-  border-radius: 2px;
 }
 
 /* ---------------- 建议词 ---------------- */
@@ -1052,22 +1118,6 @@ onMounted(() => {
   color: var(--text-3);
 }
 
-.sug-chip {
-  border: 1px dashed var(--primary);
-  background: var(--primary-soft);
-  color: var(--primary);
-  border-radius: 999px;
-  padding: 3px 12px;
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.sug-chip:hover {
-  background: var(--primary);
-  color: #fff;
-}
-
 /* ---------------- 反馈与收藏 ---------------- */
 .msg-actions {
   display: flex;
@@ -1076,44 +1126,19 @@ onMounted(() => {
   margin-top: 10px;
 }
 
-.act-btn {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  border-radius: 6px;
-  padding: 3px 10px;
-  font-size: 14px;
-  color: var(--text-3);
-  cursor: pointer;
-  transition: all 0.15s;
-  line-height: 1.4;
-}
-
-.act-btn:hover {
-  border-color: var(--primary);
-  color: var(--primary);
-}
-
-.act-btn.on {
-  border-color: var(--primary);
-  background: var(--primary-soft);
-  color: var(--primary);
-}
-
 .act-tip {
   font-size: 12px;
   color: var(--text-3);
 }
 
+/* el-button 相邻间距与 flex gap 叠加，重置 */
+.examples .el-button + .el-button,
+.suggestions .el-button + .el-button,
+.msg-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
 /* ---------------- 反馈弹窗 ---------------- */
-.feedback-modal {
-  width: 440px;
-}
-
-.feedback-modal h3 {
-  margin: 0;
-  font-size: 16px;
-}
-
 .form-label {
   display: block;
   font-size: 13px;
@@ -1123,5 +1148,68 @@ onMounted(() => {
 
 .form-label:first-child {
   margin-top: 0;
+}
+
+.dialog-select {
+  width: 100%;
+}
+
+/* ---------------- 右侧证据面板 ---------------- */
+.evidence-toggle {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 5;
+}
+
+.evidence-panel {
+  width: 380px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.evidence-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 14px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.evidence-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.evidence-card {
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.evidence-card:hover {
+  border-color: var(--primary);
+}
+
+.evidence-card.hl {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-soft);
+}
+
+.evidence-card.dim {
+  opacity: 0.55;
+}
+
+.evidence-article {
+  font-size: 12px;
+  color: var(--primary);
+  margin-bottom: 4px;
 }
 </style>

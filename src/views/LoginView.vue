@@ -1,13 +1,15 @@
-<script setup>
+<script setup lang="ts">
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { Lock, User } from '@element-plus/icons-vue'
 import { useAuthStore } from '../stores/auth'
+import type { RegisterPayload } from '../types'
 
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
 
-const mode = ref('login') // login | register
+const mode = ref<'login' | 'register'>('login') // login | register
 const loading = ref(false)
 const error = ref('')
 
@@ -21,11 +23,11 @@ const regForm = reactive({
   invite_code: '',
 })
 
-function goNext() {
+function goNext(): void {
   router.push(route.query.redirect ? String(route.query.redirect) : { name: 'chat' })
 }
 
-async function submitLogin() {
+async function submitLogin(): Promise<void> {
   error.value = ''
   if (!loginForm.username || !loginForm.password) {
     error.value = '请输入用户名和密码'
@@ -35,19 +37,27 @@ async function submitLogin() {
   try {
     await auth.login(loginForm.username, loginForm.password)
     goNext()
-  } catch (e) {
+  } catch (e: any) {
     error.value = e.message || '登录失败'
   } finally {
     loading.value = false
   }
 }
 
-async function submitRegister() {
+async function submitRegister(): Promise<void> {
   error.value = ''
-  if (regForm.username.length < 4) return (error.value = '用户名至少 4 位')
-  if (regForm.password.length < 8 || !/[a-zA-Z]/.test(regForm.password) || !/\d/.test(regForm.password))
-    return (error.value = '密码需 8~32 位且同时包含字母与数字')
-  if (regForm.password !== regForm.confirm) return (error.value = '两次输入的密码不一致')
+  if (regForm.username.length < 4) {
+    error.value = '用户名至少 4 位'
+    return
+  }
+  if (regForm.password.length < 8 || !/[a-zA-Z]/.test(regForm.password) || !/\d/.test(regForm.password)) {
+    error.value = '密码需 8~32 位且同时包含字母与数字'
+    return
+  }
+  if (regForm.password !== regForm.confirm) {
+    error.value = '两次输入的密码不一致'
+    return
+  }
   loading.value = true
   try {
     await auth.register({
@@ -56,11 +66,11 @@ async function submitRegister() {
       real_name: regForm.real_name || undefined,
       email: regForm.email || undefined,
       invite_code: regForm.invite_code || undefined,
-    })
+    } as RegisterPayload)
     // 注册成功后自动登录
     await auth.login(regForm.username, regForm.password)
     goNext()
-  } catch (e) {
+  } catch (e: any) {
     error.value = e.message || '注册失败'
   } finally {
     loading.value = false
@@ -78,32 +88,47 @@ async function submitRegister() {
       </div>
 
       <div class="mode-tabs">
-        <button :class="{ on: mode === 'login' }" @click="mode = 'login'; error = ''">登录</button>
-        <button :class="{ on: mode === 'register' }" @click="mode = 'register'; error = ''">
+        <el-button
+          :type="mode === 'login' ? 'primary' : 'default'"
+          @click="mode = 'login'; error = ''"
+        >
+          登录
+        </el-button>
+        <el-button
+          style="margin-left: 0"
+          :type="mode === 'register' ? 'primary' : 'default'"
+          @click="mode = 'register'; error = ''"
+        >
           注册
-        </button>
+        </el-button>
       </div>
 
       <!-- 登录 -->
       <form v-if="mode === 'login'" class="login-form" @submit.prevent="submitLogin">
         <div class="field">
           <label class="field-label">用户名</label>
-          <input v-model="loginForm.username" class="input" placeholder="请输入用户名" autocomplete="username" />
+          <el-input
+            v-model="loginForm.username"
+            placeholder="请输入用户名"
+            autocomplete="username"
+            :prefix-icon="User"
+          />
         </div>
         <div class="field">
           <label class="field-label">密码</label>
-          <input
+          <el-input
             v-model="loginForm.password"
-            class="input"
             type="password"
+            show-password
             placeholder="请输入密码"
             autocomplete="current-password"
+            :prefix-icon="Lock"
           />
         </div>
         <div v-if="error" class="error-text">{{ error }}</div>
-        <button class="btn submit-btn" type="submit" :disabled="loading">
-          <span v-if="loading" class="spin" />{{ loading ? '登录中…' : '登 录' }}
-        </button>
+        <el-button type="primary" size="large" style="width: 100%" native-type="submit" :loading="loading">
+          {{ loading ? '登录中…' : '登 录' }}
+        </el-button>
         <p class="hint">默认管理员：admin / Admin@123（首次部署）</p>
       </form>
 
@@ -112,35 +137,35 @@ async function submitRegister() {
         <div class="field-row">
           <div class="field">
             <label class="field-label">用户名<span class="req">*</span></label>
-            <input v-model="regForm.username" class="input" placeholder="4~50 位字母数字下划线" />
+            <el-input v-model="regForm.username" placeholder="4~50 位字母数字下划线" />
           </div>
           <div class="field">
             <label class="field-label">姓名</label>
-            <input v-model="regForm.real_name" class="input" placeholder="选填" />
+            <el-input v-model="regForm.real_name" placeholder="选填" />
           </div>
         </div>
         <div class="field">
           <label class="field-label">密码<span class="req">*</span></label>
-          <input v-model="regForm.password" class="input" type="password" placeholder="8~32 位，含字母与数字" />
+          <el-input v-model="regForm.password" type="password" show-password placeholder="8~32 位，含字母与数字" />
         </div>
         <div class="field">
           <label class="field-label">确认密码<span class="req">*</span></label>
-          <input v-model="regForm.confirm" class="input" type="password" placeholder="再次输入密码" />
+          <el-input v-model="regForm.confirm" type="password" show-password placeholder="再次输入密码" />
         </div>
         <div class="field-row">
           <div class="field">
             <label class="field-label">邮箱</label>
-            <input v-model="regForm.email" class="input" placeholder="选填" />
+            <el-input v-model="regForm.email" placeholder="选填" />
           </div>
           <div class="field">
             <label class="field-label">编辑邀请码</label>
-            <input v-model="regForm.invite_code" class="input" placeholder="成为编辑者需填写" />
+            <el-input v-model="regForm.invite_code" placeholder="成为编辑者需填写" />
           </div>
         </div>
         <div v-if="error" class="error-text">{{ error }}</div>
-        <button class="btn submit-btn" type="submit" :disabled="loading">
-          <span v-if="loading" class="spin" />{{ loading ? '注册中…' : '注册并登录' }}
-        </button>
+        <el-button type="primary" size="large" style="width: 100%" native-type="submit" :loading="loading">
+          {{ loading ? '注册中…' : '注册并登录' }}
+        </el-button>
       </form>
     </div>
   </div>
@@ -200,23 +225,6 @@ async function submitRegister() {
   margin-bottom: 22px;
 }
 
-.mode-tabs button {
-  border: none;
-  background: none;
-  padding: 8px 0;
-  border-radius: 8px;
-  font-size: 14px;
-  cursor: pointer;
-  color: var(--text-2);
-}
-
-.mode-tabs button.on {
-  background: var(--surface);
-  color: var(--primary);
-  font-weight: 600;
-  box-shadow: var(--shadow);
-}
-
 .login-form {
   display: flex;
   flex-direction: column;
@@ -227,11 +235,6 @@ async function submitRegister() {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
-}
-
-.submit-btn {
-  padding: 10px 0;
-  font-size: 15px;
 }
 
 .hint {

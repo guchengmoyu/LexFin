@@ -666,3 +666,267 @@ table.data-table {
 .cite-page:hover {
   text-decoration: underline;
 }
+
+/* ---------------- 侧边栏折叠（docs/07 §3） ---------------- */
+.nav-collapsed .app-nav {
+  width: 64px;
+  padding: 16px 8px;
+}
+
+.nav-collapsed .brand {
+  justify-content: center;
+  padding: 4px 0 18px;
+}
+
+.nav-collapsed .nav-item {
+  justify-content: center;
+  padding: 10px 0;
+}
+
+.nav-collapsed .user-card {
+  justify-content: center;
+  padding: 4px 0;
+}
+
+.nav-group {
+  font-size: 11px;
+  color: #6b7d9c;
+  letter-spacing: 1px;
+  margin: 10px 12px 4px;
+}
+
+.collapse-btn {
+  align-self: flex-end;
+  background: transparent;
+  color: #7c8db0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  width: 26px;
+  height: 26px;
+  line-height: 1;
+  font-size: 13px;
+}
+
+.collapse-btn:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.32);
+}
+
+/* ---------------- 通用页面组件 ---------------- */
+.page-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.page-toolbar .spacer {
+  flex: 1;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.metric-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: 14px 16px;
+}
+
+.metric-num {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-1);
+  line-height: 1.2;
+}
+
+.metric-label {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.metric-card.highlight .metric-num {
+  color: var(--primary);
+}
+
+.split-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .split-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: 16px;
+}
+
+.panel-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+  margin: 0 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.kv-list {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 8px 12px;
+  font-size: 13px;
+}
+
+.kv-key {
+  color: var(--text-3);
+}
+
+.kv-val {
+  color: var(--text-1);
+  word-break: break-all;
+}
+
+.source-quote {
+  border-left: 3px solid var(--primary);
+  background: var(--surface-2);
+  padding: 10px 12px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--text-2);
+  white-space: pre-wrap;
+}
+
+.source-quote mark {
+  background: #fff3bf;
+  color: #7a5600;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+.progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-3, #eef1f6);
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2f6fed, #67a1ff);
+  transition: width 0.3s;
+}
+
+.progress-bar.done {
+  background: var(--success, #21a366);
+}
+
+.progress-bar.failed {
+  background: var(--danger, #e5484d);
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.tab {
+  padding: 9px 16px;
+  font-size: 13.5px;
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+  font-weight: 600;
+}
+
+.pager-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.big-accuracy {
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.big-accuracy.pass {
+  color: #21a366;
+}
+
+.big-accuracy.fail {
+  color: #e5484d;
+}
+
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 12.5px;
+}
+
+.bar-row .bar-label {
+  width: 110px;
+  color: var(--text-2);
+  flex-shrink: 0;
+}
+
+.bar-row .bar-track {
+  flex: 1;
+  height: 10px;
+  border-radius: 999px;
+  background: #eef1f6;
+  overflow: hidden;
+}
+
+.bar-row .bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2f6fed, #67a1ff);
+}
+
+.empty-state {
+  padding: 48px 0;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.error-text {
+  color: var(--danger, #e5484d);
+  font-size: 12.5px;
+}
+
