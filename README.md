@@ -61,6 +61,7 @@
 | 09 | [测试方案设计](docs/09-测试方案设计.md) | pytest、Apifox、性能与准确率评测 |
 | 10 | [开发计划与里程碑](docs/10-开发计划与里程碑.md) | 周计划、任务拆分、风险应对 |
 | 11 | [后端与 RAG 代码实现说明](docs/11-后端与RAG代码实现说明.md) | 设计→代码映射、RAG 算法要点、验收指标对照 |
+| 12 | [本地前后端联调环境说明](docs/12-本地联调环境说明.md) | 联调端口、一键启停、已验证接口、修复记录与排障 |
 
 ## 五、可执行交付物（设计规格的落地形式）
 
@@ -79,6 +80,8 @@ scripts/                  # 评测与压测脚本（HTTP 客户端）
   eval_rag.py                 # 110 题评测集：Hit@k / MRR / 拒答正确率 / 准确率报告
   bench_api.py                # T1 检索 / T2 问答首 token 分位数压测
   smoke.sh                    # 发版前 30 秒冒烟
+  dev-start.ps1               # 本地联调一键启动（基础设施 + 后端 8002 + 前端 5173）
+  dev-stop.ps1                # 本地联调一键停止
 apifox/
   README.md                   # Apifox 使用指南（导入 / 自动同步 / 测试场景 / CLI）
   FinRAG-collection.json      # 接口集合（Postman v2.1 格式，Apifox 直接导入，与 docs/06 一致）
@@ -87,9 +90,27 @@ apifox/
 
 ## 六、快速开始
 
-> **后端与 RAG 代码已交付**（`backend/`，说明见 [backend/README.md](backend/README.md)）；
-> `frontend/`（Vue 3）按 `docs/10` 的计划另行开发。因此下面分两步：
-> **第一步先起基础设施验证环境**，第二步全栈部署（前端就绪前可只部署后端）。
+> **后端与 RAG/AI 代码已交付**（`backend/`，说明见 [backend/README.md](backend/README.md)）；
+> **前端 Vue 3 工程已交付**（`frontend/`，Vite 6）。下面三条路按需选择：
+> **① 本地前后端联调（开发模式，推荐）**、② 只起基础设施、③ 容器全栈部署。
+
+### 第零步（开发联调）：一条命令起前后端
+
+```powershell
+pwsh -File scripts/dev-start.ps1     # 基础设施 + 后端(8002) + 前端(5173)
+# 浏览器打开 http://localhost:5173   （默认 admin / Admin@123）
+pwsh -File scripts/dev-stop.ps1      # 结束应用进程（Docker 容器保留）
+```
+
+| 入口 | 地址 | 说明 |
+| --- | --- | --- |
+| 前端（开发） | <http://localhost:5173> | Vite dev，`/api` 代理到后端 |
+| 后端 Swagger | <http://127.0.0.1:8002/docs> | 联调端口 8002 |
+| 健康检查 | <http://127.0.0.1:8002/api/v1/health> | 含 MySQL / Milvus / OCR / LLM 探测 |
+| MySQL | `127.0.0.1:3307` | 3306 被本机 MySQL80 服务占用，故映射 3307 |
+
+完整说明（依赖安装、已验证接口清单、本次修复项、排障）见
+[docs/12-本地联调环境说明](docs/12-本地联调环境说明.md)。
 
 ### 第一步（现在可用）：只启动基础设施，验证环境
 

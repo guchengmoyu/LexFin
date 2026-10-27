@@ -67,6 +67,20 @@ class LLMClient:
                 logger.warning("LLM 渠道 {} 流式失败，尝试降级: {}", name, exc)
         raise BizError(ErrorCode.LLM_ERROR, "大模型服务暂时不可用，请稍后重试") from last_exc
 
+    @staticmethod
+    def _normalize_usage(usage: dict) -> dict:
+        """langchain 的 usage_metadata 用 input/output_tokens，统一成 prompt/completion/total。
+
+        否则落库的 token_usage 只有 total，无法按 input/output 计费（docs/05 §7）。
+        """
+        return {
+            "prompt_tokens": int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
+            "completion_tokens": int(
+                usage.get("completion_tokens") or usage.get("output_tokens") or 0
+            ),
+            "total_tokens": int(usage.get("total_tokens") or 0),
+        }
+
     async def _stream_once(
         self, llm, messages: Sequence[dict], temperature: Optional[float], max_tokens: Optional[int]
     ) -> AsyncIterator[str]:
@@ -82,7 +96,7 @@ class LLMClient:
             usage = (getattr(chunk, "usage_metadata", None)
                      or (getattr(chunk, "response_metadata", None) or {}).get("token_usage"))
             if usage:
-                self.last_usage = dict(usage)
+                self.last_usage = self._normalize_usage(usage)
 
     # ---------------------------------------------------------------- 非流式
     async def ainvoke(
@@ -106,7 +120,7 @@ class LLMClient:
                 self.model_name = getattr(llm, "model_name", None) or getattr(llm, "model", name)
                 usage = getattr(result, "usage_metadata", None)
                 if usage:
-                    self.last_usage = dict(usage)
+                    self.last_usage = self._normalize_usage(usage)
                 return getattr(result, "content", "") or ""
             except Exception as exc:
                 last_exc = exc
@@ -140,9 +154,13 @@ _llm: Optional[Any] = None
 
 
 def get_llm(**kwargs) -> Any:
-    """装配 LLM 客户端。EMBEDDING_PROVIDER=fake 或初始化失败时降级 FakeLLM。"""
+    """装配 LLM 客户端。LLM_PROVIDER=fake 或初始化失败时降级 FakeLLM。"""
     global _llm
     if _llm is not None:
+        return _llm
+    if (settings.llm_provider or "").lower() == "fake":
+        logger.warning("LLM_PROVIDER=fake：使用确定性 FakeLLM（仅联调/测试，不产生真实回答）")
+        _llm = FakeLLM()
         return _llm
     try:
         _llm = LLMClient()

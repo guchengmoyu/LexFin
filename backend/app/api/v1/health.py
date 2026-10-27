@@ -53,12 +53,19 @@ def health(db: Session = Depends(get_db)):
         status = "degraded"
 
     # LLM（轻量探测，不实际调用计费接口）
+    llm_fake = (settings.llm_provider or "").lower() == "fake"
+    llm_key_ok = bool(settings.llm_api_key) and not settings.llm_api_key.startswith("sk-CHANGE_ME")
+    llm_ok = llm_fake or llm_key_ok
     dependencies["llm"] = {
-        "status": "ok" if settings.llm_api_key and not settings.llm_api_key.startswith("sk-CHANGE_ME") else "error",
-        "model": settings.llm_model,
-        "message": None if settings.llm_api_key and not settings.llm_api_key.startswith("sk-CHANGE_ME") else "未配置 LLM_API_KEY",
+        "status": "ok" if llm_ok else "error",
+        "provider": settings.llm_provider,
+        "model": "fake-llm" if llm_fake else settings.llm_model,
+        "message": None
+        if llm_ok
+        else "未配置 LLM_API_KEY",
+        **({"degraded": "联调用 FakeLLM，回答为固定文本"} if llm_fake else {}),
     }
-    if dependencies["llm"]["status"] == "error":
+    if not llm_ok:
         status = "degraded"
 
     # OCR
@@ -79,7 +86,8 @@ def health(db: Session = Depends(get_db)):
     # Embedding
     dependencies["embedding"] = {
         "status": "ok",
-        "model": settings.embedding_model,
+        "provider": settings.embedding_provider,
+        "model": "fake-embedder(1024)" if (settings.embedding_provider or "").lower() == "fake" else settings.embedding_model,
         "dim": settings.embedding_dim,
     }
 

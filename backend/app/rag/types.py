@@ -120,7 +120,9 @@ class Citation:
         if len(snippet) > 220:
             snippet = snippet[:220] + "……"
         doc_id = item.document_id or None
-        source_url = f"/api/v1/documents/{doc_id}/download#page={item.page_no}" if doc_id else None
+        # 知识点向量没有页码（page_no=0），此时不要拼 #page=0，否则前端跳转到非法页
+        page_suffix = f"#page={item.page_no}" if item.page_no else ""
+        source_url = f"/api/v1/documents/{doc_id}/download{page_suffix}" if doc_id else None
         return cls(
             cite_index=cite_index,
             chunk_id=item.chunk_id,

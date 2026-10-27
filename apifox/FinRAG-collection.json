@@ -1,0 +1,1997 @@
+{
+  "info": {
+    "_postman_id": "b7c4e1a2-9f3d-4b6e-8a51-2d7c0e9f4b31",
+    "name": "FinRAG API · 金融制度知识问答系统",
+    "description": "基于 RAG 的金融制度类知识问答系统接口集合。\n\n对应设计文档：docs/06-后端接口设计.md\n配套使用指南：apifox/README.md\n\n## 格式说明\n本文件为 **Postman Collection v2.1** 格式，Apifox 原生支持该格式导入\n（项目设置 → 导入数据 → Postman → 上传本文件）。\n文件内的断言脚本使用 pm.* API，Apifox 完全兼容，无需改写。\n\n## 导入后的使用步骤\n1. 确认服务已启动：`docker compose up -d`\n2. 导入环境文件 FinRAG-environment.json，或在 Apifox「环境管理」中新建环境\n   `FinRAG Local`，设置 base_url = http://localhost:8000/api/v1\n3. 先运行 `01 Auth / 登录`，token 会自动写入环境变量\n4. 其余接口按目录顺序运行即可（环境变量自动串联）\n\n## 环境变量自动串联\ntoken（登录）→ kb_id（知识库列表）→ document_id / task_no（上传）→\nknowledge_point_id（建知识点）→ message_id / session_no（问答）\n\n## 长期方案：改为从 OpenAPI 自动同步\n后端就绪后，建议在「项目设置 → 导入数据（自动同步）」中配置\n`http://localhost:8000/openapi.json`（FastAPI 自动生成），\n并选择「智能合并」以保留本集合中已维护的中文名与断言脚本。\n详见 apifox/README.md 第三节。\n\n## 职责边界\n本集合负责接口契约、错误码与单请求时延验证；\n批量准确率与分位数性能由 scripts/eval_rag.py 与 scripts/bench_api.py 承担。",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// 集合级：自动为所有请求附带 token（登录/注册等公开接口不受影响）",
+          "const token = pm.environment.get('token');",
+          "if (token) {",
+          "    pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + token });",
+          "}",
+          "pm.request.headers.upsert({",
+          "    key: 'X-Request-ID',",
+          "    value: 'pm-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)",
+          "});"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// 集合级通用断言（对 JSON 响应生效；文件下载与 SSE 由各自请求的脚本断言）",
+          "pm.test('HTTP 状态码在 2xx', function () {",
+          "    pm.response.to.be.success;",
+          "});",
+          "const ct = pm.response.headers.get('Content-Type') || '';",
+          "if (ct.includes('application/json')) {",
+          "    pm.test('响应体符合统一结构（code/message/request_id）', function () {",
+          "        const b = pm.response.json();",
+          "        pm.expect(b).to.have.property('code');",
+          "        pm.expect(b).to.have.property('message');",
+          "        pm.expect(b).to.have.property('request_id');",
+          "        pm.expect(b.code).to.eql(0);",
+          "    });",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8000/api/v1", "type": "string" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "kb_id", "value": "1", "type": "string" },
+    { "key": "document_id", "value": "", "type": "string" },
+    { "key": "task_no", "value": "", "type": "string" },
+    { "key": "knowledge_point_id", "value": "", "type": "string" },
+    { "key": "message_id", "value": "", "type": "string" },
+    { "key": "session_no", "value": "", "type": "string" },
+    { "key": "batch_no", "value": "EVAL-20250601", "type": "string" },
+    { "key": "admin_username", "value": "admin", "type": "string" },
+    { "key": "admin_password", "value": "Admin@123", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "00 Health & Config",
+      "description": "系统级接口：健康检查、前端字典、总览统计（对应 docs/06 §5.2）",
+      "item": [
+        {
+          "name": "健康检查（含依赖探测）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 为 ok 或 degraded', function () {",
+                  "    pm.expect(pm.response.json().data.status).to.be.oneOf(['ok', 'degraded']);",
+                  "});",
+                  "pm.test('五个依赖均被探测', function () {",
+                  "    const d = pm.response.json().data.dependencies;",
+                  "    ['mysql', 'milvus', 'llm', 'ocr', 'embedding'].forEach(function (k) {",
+                  "        pm.expect(d, '缺少依赖探测结果: ' + k).to.have.property(k);",
+                  "    });",
+                  "});",
+                  "pm.test('响应时间 < 3000ms（首次含模型探测）', function () {",
+                  "    pm.expect(pm.response.responseTime).to.be.below(3000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/health", "host": ["{{base_url}}"], "path": ["health"] },
+            "description": "不鉴权，供 Docker healthcheck 与运维使用。"
+          }
+        },
+        {
+          "name": "前端字典与开关",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('包含三个分类与完整子类字典', function () {",
+                  "    const cats = pm.response.json().data.categories;",
+                  "    pm.expect(cats.map(function (c) { return c.value; })).to.have.members(['banking', 'securities', 'insurance']);",
+                  "    cats.forEach(function (c) { pm.expect(c.sub_categories.length).to.be.above(0); });",
+                  "});",
+                  "pm.test('包含时效枚举与检索模式', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d.timeliness.map(function (t) { return t.value; }))",
+                  "      .to.have.members(['effective', 'amended', 'repealed', 'unknown']);",
+                  "    pm.expect(d.retrieval_modes.map(function (m) { return m.value; }))",
+                  "      .to.have.members(['hybrid', 'keyword', 'vector']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/system/config",
+              "host": ["{{base_url}}"],
+              "path": ["system", "config"]
+            },
+            "description": "前端所有下拉选项必须来自此接口，不得硬编码。"
+          }
+        },
+        {
+          "name": "总览统计",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('返回核心统计字段', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    ['kb_count', 'document_count', 'chunk_count', 'knowledge_point_count',",
+                  "     'published_kp_count', 'qa_total', 'avg_latency_ms']",
+                  "      .forEach(function (k) { pm.expect(d).to.have.property(k); });",
+                  "});",
+                  "pm.test('知识点计数为非负整数', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d.knowledge_point_count).to.be.at.least(0);",
+                  "    pm.expect(d.published_kp_count).to.be.at.most(d.knowledge_point_count);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/stats/overview",
+              "host": ["{{base_url}}"],
+              "path": ["stats", "overview"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "01 Auth",
+      "description": "认证与鉴权（对应 docs/06 §5.1）",
+      "item": [
+        {
+          "name": "注册",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 重复注册是预期结果之一（40901 之外的 40900/40001），此处只做结构断言",
+                  "const b = pm.response.json();",
+                  "if (pm.response.code === 200 && b.code === 0) {",
+                  "    pm.test('注册成功返回 viewer 角色', function () {",
+                  "        pm.expect(b.data.role).to.eql('viewer');",
+                  "    });",
+                  "} else {",
+                  "    pm.test('重复注册返回冲突类错误码', function () {",
+                  "        pm.expect(b.code).to.be.oneOf([40001, 40900]);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"tester01\",\n  \"password\": \"Passw0rd!\",\n  \"real_name\": \"测试用户\",\n  \"email\": \"tester01@example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "登录（自动写入 token）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('登录成功且返回 token', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d.access_token).to.be.a('string').and.not.empty;",
+                  "    pm.expect(d.token_type).to.eql('bearer');",
+                  "    pm.expect(d.expires_in).to.be.above(0);",
+                  "    pm.expect(d.user.role).to.be.oneOf(['admin', 'editor', 'viewer']);",
+                  "    pm.environment.set('token', d.access_token);",
+                  "});",
+                  "pm.test('响应体不含密码哈希等敏感字段', function () {",
+                  "    pm.expect(pm.response.text()).to.not.include('password_hash');",
+                  "    pm.expect(pm.response.text()).to.not.include('$2b$');",
+                  "});",
+                  "pm.test('登录耗时 < 1000ms', function () {",
+                  "    pm.expect(pm.response.responseTime).to.be.below(1000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{admin_username}}\",\n  \"password\": \"{{admin_password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "★ 必须先运行此请求，后续所有请求依赖其写入的 token。"
+          }
+        },
+        {
+          "name": "登录失败（错误密码 → 40103）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('返回 401 且业务码为 40103', function () {",
+                  "    pm.response.to.have.status(401);",
+                  "    pm.expect(pm.response.json().code).to.eql(40103);",
+                  "});",
+                  "pm.test('错误信息为可读中文', function () {",
+                  "    pm.expect(pm.response.json().message).to.match(/[\\u4e00-\\u9fa5]/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{admin_username}}\",\n  \"password\": \"definitely_wrong_password\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "当前用户信息",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('返回当前登录用户', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d.username).to.eql(pm.environment.get('admin_username'));",
+                  "    pm.expect(d).to.have.property('role');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/auth/me", "host": ["{{base_url}}"], "path": ["auth", "me"] }
+          }
+        },
+        {
+          "name": "无 token 访问（→ 40100）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('未携带凭证返回 40100', function () {",
+                  "    pm.response.to.have.status(401);",
+                  "    pm.expect(pm.response.json().code).to.eql(40100);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "" }],
+            "url": { "raw": "{{base_url}}/auth/me", "host": ["{{base_url}}"], "path": ["auth", "me"] }
+          }
+        },
+        {
+          "name": "登出",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/logout",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "logout"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 Knowledge Base",
+      "description": "知识库管理（对应 docs/06 §5.3）",
+      "item": [
+        {
+          "name": "知识库列表（自动写入 kb_id）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('内置三个知识库', function () {",
+                  "    const items = pm.response.json().data;",
+                  "    pm.expect(items.map(function (k) { return k.code; }))",
+                  "      .to.have.members(['banking', 'securities', 'insurance']);",
+                  "    pm.environment.set('kb_id', items[0].id);",
+                  "});",
+                  "pm.test('每条含统计字段', function () {",
+                  "    pm.response.json().data.forEach(function (k) {",
+                  "        ['doc_count', 'chunk_count', 'kp_count'].forEach(function (f) {",
+                  "            pm.expect(k).to.have.property(f);",
+                  "        });",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{base_url}}/kb", "host": ["{{base_url}}"], "path": ["kb"] }
+          }
+        },
+        {
+          "name": "知识库详情",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/kb/{{kb_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["kb", "{{kb_id}}"]
+            }
+          }
+        },
+        {
+          "name": "知识库统计（验收证据）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('含知识点与校验通过率', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    ['doc_count', 'chunk_count', 'kp_count', 'published_kp_count',",
+                  "     'verified_kp_count', 'verify_pass_rate', 'sub_category_distribution',",
+                  "     'timeliness_distribution'].forEach(function (k) {",
+                  "        pm.expect(d, '缺少字段: ' + k).to.have.property(k);",
+                  "    });",
+                  "});",
+                  "pm.test('校验通过率在 0~1 之间', function () {",
+                  "    const r = pm.response.json().data.verify_pass_rate;",
+                  "    if (r !== null) { pm.expect(r).to.be.within(0, 1); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/kb/{{kb_id}}/stats",
+              "host": ["{{base_url}}"],
+              "path": ["kb", "{{kb_id}}", "stats"]
+            },
+            "description": "AC-01（知识点 ≥1000）与分布验收的直接数据来源。"
+          }
+        },
+        {
+          "name": "新建知识库（admin）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "if (b.code === 0) {",
+                  "    pm.test('新建成功并返回编码', function () {",
+                  "        pm.expect(b.data.code).to.be.a('string').and.not.empty;",
+                  "    });",
+                  "} else {",
+                  "    pm.test('非 admin 或编码冲突时给出明确业务码', function () {",
+                  "        pm.expect(b.code).to.be.oneOf([40300, 40900, 40001]);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"fund\",\n  \"name\": \"基金业务规范库\",\n  \"category\": \"securities\",\n  \"description\": \"用于验证知识库创建接口\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/kb", "host": ["{{base_url}}"], "path": ["kb"] },
+            "description": "仅 admin 可用；非 admin 应返回 40300。"
+          }
+        },
+        {
+          "name": "修改知识库（admin）",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"银行监管制度库\",\n  \"description\": \"中国人民银行、原银保监会、国家金融监督管理总局发布的银行监管政策与规范性文件\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/kb/{{kb_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["kb", "{{kb_id}}"]
+            }
+          }
+        },
+        {
+          "name": "删除知识库（admin，高危）",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/kb/{{kb_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["kb", "{{kb_id}}"]
+            },
+            "description": "⚠ 高危操作：级联删除该知识库下的文档、切片、向量与知识点。请只对临时知识库执行。"
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 Documents",
+      "description": "文档上传与解析（对应 docs/06 §5.4）",
+      "item": [
+        {
+          "name": "上传文档（自动写入 document_id / task_no）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json().data;",
+                  "pm.test('受理结果结构正确', function () {",
+                  "    pm.expect(d).to.have.property('results');",
+                  "    pm.expect(d).to.have.property('accepted');",
+                  "    pm.expect(d.accepted).to.be.at.least(0);",
+                  "});",
+                  "pm.test('成功后记录 document_id 与 task_no', function () {",
+                  "    const ok = d.results.filter(function (r) { return r.success; })[0];",
+                  "    if (ok) {",
+                  "        pm.environment.set('document_id', ok.document_id);",
+                  "        pm.environment.set('task_no', ok.task_no);",
+                  "    } else {",
+                  "        pm.test('未受理时给出明确业务码', function () {",
+                  "            pm.expect(d.results[0].code).to.be.oneOf([40010, 40011, 40012, 40901]);",
+                  "        });",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "files", "type": "file", "src": [], "description": "支持多文件；选择一份 PDF / DOCX / 图片" },
+                { "key": "kb_id", "value": "{{kb_id}}", "type": "text" },
+                { "key": "doc_type", "value": "regulation", "type": "text" },
+                { "key": "timeliness", "value": "effective", "type": "text" }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/documents/upload",
+              "host": ["{{base_url}}"],
+              "path": ["documents", "upload"]
+            },
+            "description": "在 Apifox 中手动选择文件后发送（Body 类型选 form-data，files 字段选 File 类型）。选择扫描件可验证 OCR 链路。"
+          }
+        },
+        {
+          "name": "上传非法类型（→ 40010）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('非法扩展名被拒绝', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d.rejected).to.be.above(0);",
+                  "    pm.expect(d.results[0].code).to.be.oneOf([40010, 40012]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "files", "type": "file", "src": [], "description": "选择一个 .exe / .zip 等非法文件" },
+                { "key": "kb_id", "value": "{{kb_id}}", "type": "text" }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/documents/upload",
+              "host": ["{{base_url}}"],
+              "path": ["documents", "upload"]
+            }
+          }
+        },
+        {
+          "name": "文档列表（分页筛选）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('分页结构正确', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    ['total', 'page', 'size', 'pages', 'items'].forEach(function (k) {",
+                  "        pm.expect(d).to.have.property(k);",
+                  "    });",
+                  "    pm.expect(d.items.length).to.be.at.most(d.size);",
+                  "});",
+                  "pm.test('列表项不含大字段 content', function () {",
+                  "    if (pm.response.json().data.items.length > 0) {",
+                  "        pm.expect(pm.response.json().data.items[0]).to.not.have.property('content');",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/documents?page=1&size=10&kb_id={{kb_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["documents"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "size", "value": "10" },
+                { "key": "kb_id", "value": "{{kb_id}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "文档详情",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/documents/{{document_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["documents", "{{document_id}}"]
+            }
+          }
+        },
+        {
+          "name": "文档切片列表",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('切片含条号与页码（溯源基础）', function () {",
+                  "    const items = pm.response.json().data.items;",
+                  "    if (items.length > 0) {",
+                  "        const it = items[0];",
+                  "        ['chunk_index', 'page_start', 'raw_content', 'source_type']",
+                  "          .forEach(function (k) { pm.expect(it).to.have.property(k); });",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/documents/{{document_id}}/chunks?page=1&size=20",
+              "host": ["{{base_url}}"],
+              "path": ["documents", "{{document_id}}", "chunks"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "size", "value": "20" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "解析预览（元数据预填）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('返回解析方式与预填元数据', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d.parse_method).to.be.oneOf(['text', 'ocr', 'mixed']);",
+                  "    pm.expect(d).to.have.property('detected');",
+                  "    pm.expect(d).to.have.property('preview_text');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": [], "description": "选择一份 PDF 以验证元数据抽取" }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/documents/extract-meta",
+              "host": ["{{base_url}}"],
+              "path": ["documents", "extract-meta"]
+            },
+            "description": "只解析不入库，用于上传表单的「自动识别」按钮。"
+          }
+        },
+        {
+          "name": "删除文档（级联清理）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('返回级联清理统计', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    ['deleted_chunks', 'deleted_vectors', 'affected_knowledge_points']",
+                  "      .forEach(function (k) { pm.expect(d).to.have.property(k); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/documents/{{document_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["documents", "{{document_id}}"]
+            },
+            "description": "⚠ 会级联删除切片与向量。验证一致性时使用。"
+          }
+        },
+        {
+          "name": "修改文档元数据",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"doc_no\": \"银保监会令2018年第3号\",\n  \"issuing_authority\": \"原中国银行保险监督管理委员会\",\n  \"effective_date\": \"2018-07-01\",\n  \"timeliness\": \"effective\",\n  \"keywords\": \"流动性风险,LCR,净稳定资金比例\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/documents/{{document_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["documents", "{{document_id}}"]
+            },
+            "description": "修改文号、生效日期与时效状态；时效状态直接影响检索加权。"
+          }
+        },
+        {
+          "name": "重新解析文档（幂等）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "if (b.code === 0) {",
+                  "    pm.test('返回新的 task_no', function () {",
+                  "        pm.expect(b.data.task_no).to.be.a('string').and.not.empty;",
+                  "        pm.environment.set('task_no', b.data.task_no);",
+                  "    });",
+                  "} else {",
+                  "    pm.test('已有进行中任务时返回 40902', function () {",
+                  "        pm.expect(b.code).to.be.oneOf([40902, 40401]);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": {
+              "raw": "{{base_url}}/documents/{{document_id}}/reparse",
+              "host": ["{{base_url}}"],
+              "path": ["documents", "{{document_id}}", "reparse"]
+            },
+            "description": "先删旧切片与向量再重跑全流程，chunk_index 从 0 重新开始，不产生重复。"
+          }
+        },
+        {
+          "name": "下载原文（二进制）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('返回文件流而非 JSON', function () {",
+                  "    const ct = pm.response.headers.get('Content-Type') || '';",
+                  "    pm.expect(ct).to.not.include('application/json');",
+                  "});",
+                  "pm.test('含 Content-Disposition 便于前端下载', function () {",
+                  "    pm.expect(pm.response.headers.get('Content-Disposition')).to.not.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/documents/{{document_id}}/download",
+              "host": ["{{base_url}}"],
+              "path": ["documents", "{{document_id}}", "download"]
+            },
+            "description": "前端「查看原文」抽屉使用该地址（附 #page=N 由前端定位页码）。"
+          }
+        },
+        {
+          "name": "图片 OCR 试跑",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "if (b.code === 0) {",
+                  "    pm.test('返回识别文本与置信度', function () {",
+                  "        pm.expect(b.data).to.have.property('text');",
+                  "        pm.expect(b.data).to.have.property('avg_confidence');",
+                  "    });",
+                  "} else {",
+                  "    pm.test('OCR 不可用时返回 50040', function () {",
+                  "        pm.expect(b.code).to.eql(50040);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": [], "description": "选择一张制度扫描件或截图（png/jpg/tiff）" }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/documents/ocr-preview",
+              "host": ["{{base_url}}"],
+              "path": ["documents", "ocr-preview"]
+            },
+            "description": "只做 OCR 不入库，用于快速验证 Tesseract 中文语言包是否可用。"
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 Tasks",
+      "description": "入库任务进度（对应 docs/06 §5.5）",
+      "item": [
+        {
+          "name": "任务详情（进度轮询）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('状态在合法枚举内', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d.status).to.be.oneOf([",
+                  "        'queued', 'parsing', 'cleaning', 'chunking',",
+                  "        'embedding', 'indexing', 'success', 'failed']);",
+                  "});",
+                  "pm.test('progress 在 0~100 之间', function () {",
+                  "    const p = pm.response.json().data.progress;",
+                  "    pm.expect(p).to.be.within(0, 100);",
+                  "});",
+                  "pm.test('失败时必须带 error_message', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    if (d.status === 'failed') { pm.expect(d.error_message).to.not.be.null; }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/tasks/{{task_no}}",
+              "host": ["{{base_url}}"],
+              "path": ["tasks", "{{task_no}}"]
+            }
+          }
+        },
+        {
+          "name": "任务列表",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/tasks?page=1&size=10",
+              "host": ["{{base_url}}"],
+              "path": ["tasks"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "size", "value": "10" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 Knowledge Points",
+      "description": "知识点管理（对应 docs/06 §5.6）。★ 验收指标载体",
+      "item": [
+        {
+          "name": "知识点列表（多条件筛选）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('分页结构正确且字段齐全', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    ['total', 'page', 'size', 'pages', 'items'].forEach(function (k) {",
+                  "        pm.expect(d).to.have.property(k);",
+                  "    });",
+                  "    if (d.items.length > 0) {",
+                  "        ['id', 'code', 'title', 'content', 'category', 'timeliness',",
+                  "         'verify_status', 'status'].forEach(function (f) {",
+                  "            pm.expect(d.items[0], '缺少字段 ' + f).to.have.property(f);",
+                  "        });",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/knowledge-points?page=1&size=10&kb_id={{kb_id}}&status=published",
+              "host": ["{{base_url}}"],
+              "path": ["knowledge-points"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "size", "value": "10" },
+                { "key": "kb_id", "value": "{{kb_id}}" },
+                { "key": "status", "value": "published" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "新建知识点（自动写入 knowledge_point_id）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "if (b.code === 0) {",
+                  "    pm.test('code 由服务端生成且格式正确', function () {",
+                  "        pm.expect(b.data.code).to.match(/^KP-(BANK|SEC|INS)-\\d{4}$/);",
+                  "    });",
+                  "    pm.test('初始校验状态为 pending', function () {",
+                  "        pm.expect(b.data.verify_status).to.eql('pending');",
+                  "    });",
+                  "    pm.environment.set('knowledge_point_id', b.data.id);",
+                  "} else {",
+                  "    pm.test('校验失败时返回 40001 并给出字段级错误', function () {",
+                  "        pm.expect(b.code).to.eql(40001);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"kb_id\": {{kb_id}},\n  \"title\": \"商业银行流动性覆盖率的最低监管要求是多少？\",\n  \"content\": \"根据《商业银行流动性风险管理办法》，商业银行的流动性覆盖率应当不低于100%，以确保在严重流动性压力情景下能够满足未来30日的流动性需求。\",\n  \"category\": \"banking\",\n  \"sub_category\": \"流动性风险\",\n  \"doc_no\": \"银保监会令2018年第3号\",\n  \"issuing_authority\": \"原中国银行保险监督管理委员会\",\n  \"article_no\": \"第二十五条\",\n  \"effective_date\": \"2018-07-01\",\n  \"timeliness\": \"effective\",\n  \"keywords\": \"LCR,流动性覆盖率,优质流动性资产,30日\",\n  \"difficulty\": 1,\n  \"status\": \"draft\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/knowledge-points",
+              "host": ["{{base_url}}"],
+              "path": ["knowledge-points"]
+            }
+          }
+        },
+        {
+          "name": "非法分类（→ 40001）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('非法 category 被拒绝', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "    pm.expect(pm.response.json().code).to.eql(40001);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"kb_id\": {{kb_id}},\n  \"title\": \"分类非法用例\",\n  \"content\": \"用于验证 category 枚举校验。\",\n  \"category\": \"not_a_category\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/knowledge-points",
+              "host": ["{{base_url}}"],
+              "path": ["knowledge-points"]
+            }
+          }
+        },
+        {
+          "name": "知识点详情",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/knowledge-points/{{knowledge_point_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["knowledge-points", "{{knowledge_point_id}}"]
+            }
+          }
+        },
+        {
+          "name": "修改知识点",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"keywords\": \"LCR,流动性覆盖率,优质流动性资产,30日,流动性风险\",\n  \"difficulty\": 2\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/knowledge-points/{{knowledge_point_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["knowledge-points", "{{knowledge_point_id}}"]
+            }
+          }
+        },
+        {
+          "name": "人工校验提交",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('校验状态与校验人已记录', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d.verify_status).to.be.oneOf(['passed', 'doubted', 'rejected']);",
+                  "    pm.expect(d.verified_at).to.not.be.null;",
+                  "    pm.expect(d.verified_by).to.not.be.null;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"verify_status\": \"passed\",\n  \"comment\": \"与原文第二十五条一致\",\n  \"confidence\": 0.95\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/knowledge-points/{{knowledge_point_id}}/verify",
+              "host": ["{{base_url}}"],
+              "path": ["knowledge-points", "{{knowledge_point_id}}", "verify"]
+            }
+          }
+        },
+        {
+          "name": "批量导入 · 预校验（dry_run=true）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('预校验不写库并返回明细', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d.dry_run).to.be.true;",
+                  "    pm.expect(d).to.have.property('total_rows');",
+                  "    pm.expect(d).to.have.property('valid_rows');",
+                  "    pm.expect(d).to.have.property('errors');",
+                  "    pm.expect(d.errors.length).to.be.at.least(0);",
+                  "});",
+                  "pm.test('错误明细含行号与字段名', function () {",
+                  "    pm.response.json().data.errors.forEach(function (e) {",
+                  "        pm.expect(e).to.have.property('row');",
+                  "        pm.expect(e).to.have.property('message');",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": [], "description": "选择知识点导入模板 .xlsx / .csv" },
+                { "key": "kb_id", "value": "{{kb_id}}", "type": "text" },
+                { "key": "dry_run", "value": "true", "type": "text" }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/knowledge-points/import",
+              "host": ["{{base_url}}"],
+              "path": ["knowledge-points", "import"]
+            },
+            "description": "★ 达成 1000 条指标的主要通道。先 dry_run=true 校验，再改 false 执行导入。"
+          }
+        },
+        {
+          "name": "关联条文查询",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('返回三类关联结构', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    ['context', 'same_topic', 'supersede'].forEach(function (k) {",
+                  "        pm.expect(d, '缺少关联分组 ' + k).to.have.property(k);",
+                  "        pm.expect(d[k]).to.be.an('array');",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/knowledge-points/{{knowledge_point_id}}/related",
+              "host": ["{{base_url}}"],
+              "path": ["knowledge-points", "{{knowledge_point_id}}", "related"]
+            }
+          }
+        },
+        {
+          "name": "知识点统计（AC-01 证据）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('含 published 总数（对照 docs/09 §11 的 1000 条目标）', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d).to.have.property('published');",
+                  "    pm.expect(d).to.have.property('total');",
+                  "    pm.expect(d).to.have.property('by_category');",
+                  "    pm.expect(d).to.have.property('by_verify_status');",
+                  "    pm.expect(d).to.have.property('coverage_rate');",
+                  "    console.log('当前已发布知识点数量：' + d.published + '（验收目标 ≥ 1000）');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/knowledge-points/stats",
+              "host": ["{{base_url}}"],
+              "path": ["knowledge-points", "stats"]
+            }
+          }
+        },
+        {
+          "name": "来源切片列表（溯源依据）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('来源条目含引用原文片段与页码', function () {",
+                  "    const items = pm.response.json().data;",
+                  "    const arr = Array.isArray(items) ? items : (items.items || []);",
+                  "    if (arr.length > 0) {",
+                  "        ['chunk_id', 'document_id', 'quote_text', 'is_primary']",
+                  "          .forEach(function (k) { pm.expect(arr[0], '缺少 ' + k).to.have.property(k); });",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/knowledge-points/{{knowledge_point_id}}/sources",
+              "host": ["{{base_url}}"],
+              "path": ["knowledge-points", "{{knowledge_point_id}}", "sources"]
+            },
+            "description": "人工校验页面「并排对照原文」的数据来源。"
+          }
+        },
+        {
+          "name": "绑定来源切片",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"chunk_id\": 1,\n  \"is_primary\": true,\n  \"quote_text\": \"商业银行的流动性覆盖率应当不低于100%。\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/knowledge-points/{{knowledge_point_id}}/sources",
+              "host": ["{{base_url}}"],
+              "path": ["knowledge-points", "{{knowledge_point_id}}", "sources"]
+            },
+            "description": "chunk_id 需替换为真实存在的切片 id（从「文档切片列表」获取）。"
+          }
+        },
+        {
+          "name": "解绑来源切片",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/knowledge-points/{{knowledge_point_id}}/sources/{{source_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["knowledge-points", "{{knowledge_point_id}}", "sources", "{{source_id}}"]
+            },
+            "description": "source_id 为 knowledge_point_source 表主键，从「来源切片列表」获取。"
+          }
+        },
+        {
+          "name": "批量导出（二进制）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('返回 Excel/CSV 文件流', function () {",
+                  "    const ct = pm.response.headers.get('Content-Type') || '';",
+                  "    pm.expect(ct).to.not.include('application/json');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/knowledge-points/export?kb_id={{kb_id}}&status=published",
+              "host": ["{{base_url}}"],
+              "path": ["knowledge-points", "export"],
+              "query": [
+                { "key": "kb_id", "value": "{{kb_id}}" },
+                { "key": "status", "value": "published" }
+              ]
+            },
+            "description": "导出的文件可直接作为验收材料，也可回填为导入模板。"
+          }
+        },
+        {
+          "name": "删除知识点",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('返回删除结果', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d).to.have.property('deleted');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/knowledge-points/{{knowledge_point_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["knowledge-points", "{{knowledge_point_id}}"]
+            },
+            "description": "级联清理 knowledge_point_source、relation 与 Milvus 中 pk=kp_{id} 的向量。请只删除自建的测试知识点。"
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 Retrieve",
+      "description": "检索接口（对应 docs/06 §5.7）。不调用 LLM，目标 P95 ≤ 500ms",
+      "item": [
+        {
+          "name": "混合检索（智能模式）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('返回排序后的证据列表', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d).to.have.property('items');",
+                  "    pm.expect(d).to.have.property('latency_ms');",
+                  "    if (d.items.length > 1) {",
+                  "        pm.expect(d.items[0].score).to.be.at.least(d.items[1].score);",
+                  "    }",
+                  "});",
+                  "pm.test('条目含溯源字段与两路排名', function () {",
+                  "    const it = pm.response.json().data.items[0];",
+                  "    if (it) {",
+                  "        ['source_type', 'source_id', 'snippet', 'score']",
+                  "          .forEach(function (k) { pm.expect(it).to.have.property(k); });",
+                  "        pm.expect(it).to.have.property('vector_rank');",
+                  "        pm.expect(it).to.have.property('keyword_rank');",
+                  "    }",
+                  "});",
+                  "pm.test('NFR-01：检索 P95 ≤ 500ms（单次作为参考）', function () {",
+                  "    pm.expect(pm.response.responseTime).to.be.below(1500);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"流动性覆盖率的最低要求\",\n  \"mode\": \"hybrid\",\n  \"kb_ids\": [{{kb_id}}],\n  \"top_k\": 10,\n  \"include_knowledge_points\": true,\n  \"include_chunks\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/retrieve",
+              "host": ["{{base_url}}"],
+              "path": ["retrieve"]
+            }
+          }
+        },
+        {
+          "name": "纯关键词检索",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('keyword 模式下 vector_rank 应为 null', function () {",
+                  "    const items = pm.response.json().data.items;",
+                  "    items.forEach(function (it) {",
+                  "        pm.expect(it.vector_rank).to.be.null;",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"流动性覆盖率\",\n  \"mode\": \"keyword\",\n  \"top_k\": 10\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/retrieve",
+              "host": ["{{base_url}}"],
+              "path": ["retrieve"]
+            }
+          }
+        },
+        {
+          "name": "纯语义检索",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vector 模式下 keyword_rank 应为 null', function () {",
+                  "    pm.response.json().data.items.forEach(function (it) {",
+                  "        pm.expect(it.keyword_rank).to.be.null;",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"银行要留多少优质资产应对资金流出\",\n  \"mode\": \"vector\",\n  \"top_k\": 10\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/retrieve",
+              "host": ["{{base_url}}"],
+              "path": ["retrieve"]
+            }
+          }
+        },
+        {
+          "name": "关键词检索（GET 便捷版，含高亮）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('返回分页结果', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    ['total', 'page', 'size', 'pages', 'items'].forEach(function (k) {",
+                  "        pm.expect(d).to.have.property(k);",
+                  "    });",
+                  "});",
+                  "pm.test('高亮标签仅允许 <em>（防 XSS）', function () {",
+                  "    const body = pm.response.text();",
+                  "    pm.expect(body).to.not.include('<script');",
+                  "    pm.expect(body).to.not.include('javascript:');",
+                  "});",
+                  "pm.test('NFR-01：检索耗时 < 1500ms', function () {",
+                  "    pm.expect(pm.response.responseTime).to.be.below(1500);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/search?q=流动性覆盖率&kb_id={{kb_id}}&page=1&size=10&mode=keyword&highlight=true",
+              "host": ["{{base_url}}"],
+              "path": ["search"],
+              "query": [
+                { "key": "q", "value": "流动性覆盖率" },
+                { "key": "kb_id", "value": "{{kb_id}}" },
+                { "key": "page", "value": "1" },
+                { "key": "size", "value": "10" },
+                { "key": "mode", "value": "keyword" },
+                { "key": "highlight", "value": "true" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "XSS 防护验证",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('脚本标签被转义，未原样回显', function () {",
+                  "    pm.expect(pm.response.text()).to.not.include('<script>alert(1)</script>');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E&page=1&size=5&highlight=true",
+              "host": ["{{base_url}}"],
+              "path": ["search"],
+              "query": [
+                { "key": "q", "value": "<script>alert(1)</script>" },
+                { "key": "page", "value": "1" },
+                { "key": "size", "value": "5" },
+                { "key": "highlight", "value": "true" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 QA",
+      "description": "自然语言问答（对应 docs/06 §5.8）。★ 核心接口",
+      "item": [
+        {
+          "name": "问答（非流式，自动写入 message_id / session_no）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "const d = b.data;",
+                  "pm.test('answer_type 在合法枚举内', function () {",
+                  "    pm.expect(d.answer_type).to.be.oneOf(['answered', 'refused', 'error', 'clarify']);",
+                  "});",
+                  "pm.test('正常回答必须带引用且在答案中可找回角标', function () {",
+                  "    if (d.answer_type === 'answered') {",
+                  "        pm.expect(d.citations.length).to.be.above(0);",
+                  "        d.citations.forEach(function (c) {",
+                  "            pm.expect(d.answer, '答案缺少角标 [' + c.cite_index + ']')",
+                  "              .to.include('[' + c.cite_index + ']');",
+                  "            pm.expect(c.snippet).to.not.be.empty;",
+                  "        });",
+                  "    }",
+                  "});",
+                  "pm.test('引用含文号/条号/页码（溯源性）', function () {",
+                  "    if (d.citations && d.citations.length > 0) {",
+                  "        const c = d.citations[0];",
+                  "        ['cite_index', 'document_id', 'doc_title', 'article_no', 'page_no', 'timeliness']",
+                  "          .forEach(function (k) { pm.expect(c, '缺少 ' + k).to.have.property(k); });",
+                  "    }",
+                  "});",
+                  "pm.test('返回可信度与分段耗时', function () {",
+                  "    pm.expect(d.confidence).to.be.within(0, 1);",
+                  "    pm.expect(d.confidence_level).to.be.oneOf(['high', 'medium', 'low']);",
+                  "    ['rewrite', 'retrieve', 'rerank', 'llm_ttft', 'total']",
+                  "      .forEach(function (k) { pm.expect(d.latency_detail).to.have.property(k); });",
+                  "});",
+                  "pm.test('非流式完整响应 < 15000ms（参考值）', function () {",
+                  "    pm.expect(pm.response.responseTime).to.be.below(15000);",
+                  "});",
+                  "pm.environment.set('message_id', d.message_id);",
+                  "pm.environment.set('session_no', d.session_no);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"商业银行流动性覆盖率的最低要求是多少？\",\n  \"session_no\": null,\n  \"mode\": \"hybrid\",\n  \"top_k\": 5,\n  \"use_history\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/qa/ask",
+              "host": ["{{base_url}}"],
+              "path": ["qa", "ask"]
+            }
+          }
+        },
+        {
+          "name": "拒答验证（知识库外问题）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('知识库外问题应拒答而非编造', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d.answer_type).to.eql('refused');",
+                  "    pm.expect(d.answer).to.include('未检索到');",
+                  "});",
+                  "pm.test('拒答时无可信度或无引用', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d.confidence === 0 || d.citations.length === 0).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"如何制作一杯手冲咖啡？\",\n  \"mode\": \"hybrid\",\n  \"use_history\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/qa/ask",
+              "host": ["{{base_url}}"],
+              "path": ["qa", "ask"]
+            },
+            "description": "对应 AC-06：知识库外问题必须正确拒答，这是反幻觉能力的直接证据。"
+          }
+        },
+        {
+          "name": "空问题（→ 40020）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('空问题返回 40020', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "    pm.expect(pm.response.json().code).to.eql(40020);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"question\": \"   \"\n}" },
+            "url": {
+              "raw": "{{base_url}}/qa/ask",
+              "host": ["{{base_url}}"],
+              "path": ["qa", "ask"]
+            }
+          }
+        },
+        {
+          "name": "SSE 流式问答",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Apifox 与 Postman 一样会等流结束再展示完整响应体，此处对事件序列做断言",
+                  "const txt = pm.response.text();",
+                  "pm.test('包含 meta / token / done 事件', function () {",
+                  "    pm.expect(txt).to.include('event: meta');",
+                  "    pm.expect(txt).to.include('event: token');",
+                  "    pm.expect(txt).to.include('event: done');",
+                  "});",
+                  "pm.test('meta 事件先于任何 token 事件（2 秒体感的实现基础）', function () {",
+                  "    pm.expect(txt.indexOf('event: meta')).to.be.below(txt.indexOf('event: token'));",
+                  "});",
+                  "pm.test('响应头声明为 text/event-stream', function () {",
+                  "    pm.expect(pm.response.headers.get('Content-Type')).to.include('text/event-stream');",
+                  "});",
+                  "pm.test('done 事件含 confidence 与 used_citations', function () {",
+                  "    const m = txt.match(/event: done\\s*\\ndata: (.+)/);",
+                  "    pm.expect(m, '未找到 done 事件').to.not.be.null;",
+                  "    const done = JSON.parse(m[1]);",
+                  "    pm.expect(done).to.have.property('confidence');",
+                  "    pm.expect(done).to.have.property('used_citations');",
+                  "    pm.expect(done).to.have.property('latency_detail');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "text/event-stream" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"净稳定资金比率的要求是什么？\",\n  \"session_no\": \"{{session_no}}\",\n  \"mode\": \"hybrid\",\n  \"top_k\": 5,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/qa/ask/stream",
+              "host": ["{{base_url}}"],
+              "path": ["qa", "ask", "stream"]
+            },
+            "description": "Apifox 的接口调试面板不支持逐事件渲染，会等流结束后展示完整报文；真实流式体验请用前端页面。\n逐事件首 token 时延由 scripts/bench_api.py 测量（docs/09 §5）。\n自动化跑该接口时，请在「测试场景」中以本接口为测试步骤并保留此断言脚本。"
+          }
+        }
+      ]
+    },
+    {
+      "name": "08 Sessions",
+      "description": "会话与历史（对应 docs/06 §5.9）",
+      "item": [
+        {
+          "name": "会话列表",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/qa/sessions?page=1&size=20",
+              "host": ["{{base_url}}"],
+              "path": ["qa", "sessions"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "size", "value": "20" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "会话详情（含引用回看）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('assistant 消息保留引用（刷新后可完整回看）', function () {",
+                  "    const msgs = pm.response.json().data.messages || [];",
+                  "    const asst = msgs.filter(function (m) { return m.role === 'assistant'; });",
+                  "    if (asst.length > 0) {",
+                  "        pm.expect(asst[0]).to.have.property('citations');",
+                  "        pm.expect(asst[0]).to.have.property('favorited');",
+                  "        pm.expect(asst[0]).to.have.property('feedback');",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/qa/sessions/{{session_no}}",
+              "host": ["{{base_url}}"],
+              "path": ["qa", "sessions", "{{session_no}}"]
+            }
+          }
+        },
+        {
+          "name": "删除会话",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/qa/sessions/{{session_no}}",
+              "host": ["{{base_url}}"],
+              "path": ["qa", "sessions", "{{session_no}}"]
+            }
+          }
+        },
+        {
+          "name": "单条消息详情",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('assistant 消息含引用与耗时明细', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d).to.have.property('role');",
+                  "    if (d.role === 'assistant') {",
+                  "        pm.expect(d).to.have.property('citations');",
+                  "        pm.expect(d).to.have.property('latency_detail');",
+                  "        pm.expect(d).to.have.property('confidence');",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/qa/messages/{{message_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["qa", "messages", "{{message_id}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "09 Favorites",
+      "description": "收藏（对应 docs/06 §5.10）",
+      "item": [
+        {
+          "name": "添加收藏",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('收藏成功返回 message_id', function () {",
+                  "    pm.expect(pm.response.json().data).to.have.property('message_id');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message_id\": {{message_id}},\n  \"note\": \"流动性指标口径\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/favorites",
+              "host": ["{{base_url}}"],
+              "path": ["favorites"]
+            }
+          }
+        },
+        {
+          "name": "收藏列表",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/favorites?page=1&size=10",
+              "host": ["{{base_url}}"],
+              "path": ["favorites"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "size", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "取消收藏",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/favorites/{{message_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["favorites", "{{message_id}}"]
+            }
+          }
+        },
+        {
+          "name": "修改收藏备注",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"note\": \"核心流动性监管指标，答辩重点\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/favorites/{{message_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["favorites", "{{message_id}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "10 Feedback & Review",
+      "description": "反馈与人工校验/准确率（对应 docs/06 §5.11）。★ 85% 指标落库入口",
+      "item": [
+        {
+          "name": "提交答案反馈（点踩）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('反馈已受理', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    pm.expect(d.rating).to.eql(-1);",
+                  "    pm.expect(d.status).to.eql('open');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rating\": -1,\n  \"reason\": \"inaccurate\",\n  \"comment\": \"引用的数值与原文不一致\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/qa/messages/{{message_id}}/feedback",
+              "host": ["{{base_url}}"],
+              "path": ["qa", "messages", "{{message_id}}", "feedback"]
+            }
+          }
+        },
+        {
+          "name": "反馈列表",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/qa/feedback?status=open&page=1&size=10",
+              "host": ["{{base_url}}"],
+              "path": ["qa", "feedback"],
+              "query": [
+                { "key": "status", "value": "open" },
+                { "key": "page", "value": "1" },
+                { "key": "size", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "提交人工校验结论",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "if (b.code === 0) {",
+                  "    pm.test('校验记录已落库', function () {",
+                  "        pm.expect(b.data).to.have.property('review_id');",
+                  "        pm.expect(b.data.is_correct).to.be.oneOf([0, 1]);",
+                  "    });",
+                  "} else {",
+                  "    pm.test('同一校验人对同一目标重复提交返回冲突', function () {",
+                  "        pm.expect(b.code).to.be.oneOf([40900, 40001]);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"target_type\": \"answer\",\n  \"target_id\": {{message_id}},\n  \"is_correct\": 1,\n  \"error_type\": null,\n  \"comment\": \"要点完整，引用准确\",\n  \"batch_no\": \"{{batch_no}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/qa/reviews",
+              "host": ["{{base_url}}"],
+              "path": ["qa", "reviews"]
+            }
+          }
+        },
+        {
+          "name": "准确率统计（AC-03 证据）",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('返回准确率与是否达标', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    ['total', 'correct', 'incorrect', 'accuracy', 'pass', 'threshold']",
+                  "      .forEach(function (k) { pm.expect(d, '缺少 ' + k).to.have.property(k); });",
+                  "    pm.expect(d.threshold).to.eql(0.85);",
+                  "});",
+                  "pm.test('accuracy 与 correct/total 一致', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    if (d.total > 0) {",
+                  "        pm.expect(Math.abs(d.accuracy - d.correct / d.total)).to.be.below(0.001);",
+                  "    }",
+                  "    console.log('准确率 = ' + d.accuracy + '（阈值 ' + d.threshold + '）→ ' + (d.pass ? '达标' : '未达标'));",
+                  "});",
+                  "pm.test('双人标注时给出 Kappa', function () {",
+                  "    const d = pm.response.json().data;",
+                  "    if (d.reviewer_count >= 2) { pm.expect(d).to.have.property('cohen_kappa'); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/qa/reviews/stats?batch_no={{batch_no}}&target_type=answer",
+              "host": ["{{base_url}}"],
+              "path": ["qa", "reviews", "stats"],
+              "query": [
+                { "key": "batch_no", "value": "{{batch_no}}" },
+                { "key": "target_type", "value": "answer" }
+              ]
+            },
+            "description": "★ 答辩现场展示 85% 准确率指标的直接接口。"
+          }
+        }
+      ]
+    }
+  ]
+}

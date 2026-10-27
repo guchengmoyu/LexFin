@@ -1,0 +1,232 @@
+# =============================================================================
+#  基于 RAG 的金融制度类知识问答系统 · 全栈编排（目标状态）
+#  用法：
+#    cd deploy
+#    cp .env.example .env      # 必须填写 LLM_API_KEY
+#    docker compose up -d
+#    docker compose logs -f backend
+#
+#  依赖：仅需 Docker 24+ 与 Docker Compose v2，无需本地 Python / Node / MySQL
+#  文档：docs/08-部署与运维设计.md
+#
+#  注意：本文件构建 backend/ 与 frontend/ 两个应用目录。
+#        在这两个目录按 docs/10 的计划创建完成之前，请改用：
+#        docker compose -f docker-compose.infra.yml up -d
+# =============================================================================
+
+name: finrag
+
+# ---------------------------------------------------------------------------
+# 公共日志配置
+# ---------------------------------------------------------------------------
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+
+  # =========================================================================
+  # 基础设施
+  # =========================================================================
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: finrag-etcd
+    restart: unless-stopped
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - ./volumes/etcd:/etcd
+    command: >
+      etcd -advertise-client-urls=http://127.0.0.1:2379
+           -listen-client-urls http://0.0.0.0:2379
+           --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+    networks: [finrag-net]
+
+  minio:
+    # 说明：官方 minio/minio 镜像已从 Docker Hub 下线（2025 年起迁移至需登录的 quay.io），
+    #       此处改用 Bitnami 打包的同版本 MinIO 镜像；可通过 MINIO_IMAGE 覆盖。
+    image: ${MINIO_IMAGE:-bitnamilegacy/minio:latest}
+    container_name: finrag-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_API_PORT_NUMBER: "9000"
+      MINIO_CONSOLE_PORT_NUMBER: "9001"
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${MINIO_HOST_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
+    volumes:
+      - ./volumes/minio:/bitnami/minio/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+    networks: [finrag-net]
+
+  milvus:
+    image: milvusdb/milvus:${MILVUS_VERSION:-v2.4.9}
+    container_name: finrag-milvus
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      COMMON_STORAGETYPE: minio
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./volumes/milvus:/var/lib/milvus
+    ports:
+      - "${MILVUS_HOST_PORT:-19530}:19530"
+      - "${MILVUS_METRICS_HOST_PORT:-9091}:9091"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 120s
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    logging: *default-logging
+    networks: [finrag-net]
+
+  mysql:
+    image: mysql:8.0
+    container_name: finrag-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?必须设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-finrag}
+      MYSQL_USER: ${MYSQL_USER:-finrag}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?必须设置 MYSQL_PASSWORD}
+      TZ: ${TZ:-Asia/Shanghai}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+      - --ngram_token_size=2
+      - --max-connections=300
+      - --innodb-buffer-pool-size=512M
+      - --sql-mode=STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION
+    ports:
+      - "${MYSQL_HOST_PORT:-3306}:3306"
+    volumes:
+      - ./volumes/mysql:/var/lib/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    logging: *default-logging
+    networks: [finrag-net]
+
+  # =========================================================================
+  # 应用
+  # =========================================================================
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      args:
+        # 需要解析 .doc 时改为 true（会额外安装 LibreOffice，镜像增大约 500MB）
+        WITH_LIBREOFFICE: ${WITH_LIBREOFFICE:-false}
+    image: finrag-backend:${APP_VERSION:-1.0.0}
+    container_name: finrag-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # 容器内服务名与端口（覆盖 .env 中可能存在的本地开发值）
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MILVUS_HOST: milvus
+      MILVUS_PORT: "19530"
+    ports:
+      - "${BACKEND_HOST_PORT:-8000}:8000"
+    volumes:
+      # 原始文档 / OCR 缓存 / 嵌入模型权重 / 日志，全部持久化，容器重建不丢
+      - ./data:/data
+    depends_on:
+      mysql:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    logging: *default-logging
+    networks: [finrag-net]
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api/v1
+    image: finrag-frontend:${APP_VERSION:-1.0.0}
+    container_name: finrag-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_HOST_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_started
+    logging: *default-logging
+    networks: [finrag-net]
+
+  # =========================================================================
+  # 可选运维工具（默认不启动）
+  #   docker compose --profile tools up -d attu
+  # =========================================================================
+
+  attu:
+    image: zilliz/attu:${ATTU_VERSION:-v2.4}
+    container_name: finrag-attu
+    restart: unless-stopped
+    profiles: ["tools"]
+    environment:
+      MILVUS_URL: milvus:19530
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${ATTU_HOST_PORT:-3000}:3000"
+    depends_on:
+      milvus:
+        condition: service_healthy
+    logging: *default-logging
+    networks: [finrag-net]
+
+networks:
+  finrag-net:
+    name: finrag-net
+    driver: bridge

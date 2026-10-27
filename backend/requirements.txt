@@ -24,6 +24,10 @@ langchain-text-splitters==0.3.4
 
 # --- 向量库（课题指定 Milvus 2.4） ---
 pymilvus==2.4.9
+# pymilvus 2.4.9 仍依赖 pkg_resources 与 environs 的旧 API：
+# setuptools>=81 移除了 pkg_resources，marshmallow 4 移除了 __version_info__
+setuptools<81
+marshmallow<4
 
 # --- 向量化 / 重排（docs/00 ADR-02；首次启动下载权重约 1.3GB） ---
 sentence-transformers==3.3.1

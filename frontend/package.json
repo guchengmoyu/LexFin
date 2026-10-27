@@ -1,0 +1,21 @@
+{
+  "name": "lexfin-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "description": "基于 RAG 的金融制度类知识问答系统 - Web 前端",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "pinia": "^2.2.8",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.0.7"
+  }
+}

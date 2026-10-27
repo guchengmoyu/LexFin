@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.constants import ErrorCode, Role
+from app.core.constants import ROLE_RANK, ErrorCode, Role
 from app.core.exceptions import BizError
 from app.core.security import decode_access_token
 from app.db.session import get_db  # noqa: F401  (统一从此处导出)
@@ -41,11 +41,15 @@ def get_current_user(
 
 
 def require_role(*roles: Role) -> Callable[..., User]:
-    """路由级角色校验：dependencies=[Depends(require_role(Role.editor))]。"""
+    """路由级角色校验：dependencies=[Depends(require_role(Role.editor))]。
+
+    按 ROLE_RANK 层级判定（admin ⊇ editor ⊇ viewer），与 docs/01 §2 权限矩阵一致。
+    """
     allowed = {r.value for r in roles} or {r.value for r in Role}
+    min_rank = min(ROLE_RANK.get(name, 99) for name in allowed)
 
     def _checker(user: User = Depends(get_current_user)) -> User:
-        if user.role not in allowed:
+        if ROLE_RANK.get(user.role, 0) < min_rank:
             raise BizError(ErrorCode.FORBIDDEN, "无操作权限")
         return user
 

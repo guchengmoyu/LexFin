@@ -17,6 +17,15 @@ class Role(str, Enum):
     viewer = "viewer"
 
 
+#: 角色层级（docs/01 §2 角色权限矩阵：admin ⊇ editor ⊇ viewer）。
+#: require_role 按层级判定，避免「admin 被 editor 级接口拒绝」。
+ROLE_RANK = {
+    Role.viewer.value: 1,
+    Role.editor.value: 2,
+    Role.admin.value: 3,
+}
+
+
 class DocStatus(str, Enum):
     pending = "pending"
     parsing = "parsing"
@@ -223,6 +232,8 @@ CATEGORY_SUB: dict[str, list[str]] = {
     "securities": [
         "发行上市", "信息披露", "交易规则", "投资者适当性", "证券公司治理",
         "资产管理", "债券业务", "融资融券", "投资顾问", "基金销售",
+        # 成员2 审核批次（新增九份制度/候选表）使用的合并类目：证券发行、交易与监管
+        "证券发行交易与监管",
     ],
     "insurance": [
         "保险合同与监管", "产品条款", "销售规范", "偿付能力", "资金运用", "理赔服务",

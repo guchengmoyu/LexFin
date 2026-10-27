@@ -210,9 +210,19 @@ class KnowledgePointService:
 
     # ---------------------------------------------------------------- 导入导出
     def import_file(
-        self, db: Session, user: User, kb_id: int, file_name: str, data: bytes, dry_run: bool
+        self,
+        db: Session,
+        user: User,
+        kb_id: int,
+        file_name: str,
+        data: bytes,
+        dry_run: bool,
+        defer_embedding: bool = False,
     ) -> dict:
-        """批量导入（Excel/CSV），dry_run=true 只校验不写库（docs/06 §5.6）。"""
+        """批量导入（Excel/CSV），dry_run=true 只校验不写库（docs/06 §5.6）。
+
+        defer_embedding=True 时先落库、最后再分批向量化（大批量导入提速用）。
+        """
         rows = self._parse_import_file(file_name, data)
         errors: List[dict] = []
         duplicates: List[dict] = []
@@ -268,13 +278,18 @@ class KnowledgePointService:
             return result
 
         created = updated = skipped = vector_failed = 0
+        imported_codes: List[str] = []
         for row in valid_rows:
             try:
                 code = (row.get("code") or "").strip()
                 existed = bool(code and db.scalar(select(KnowledgePoint.id).where(KnowledgePoint.code == code)))
                 with db.begin_nested():
-                    imported = self._upsert_import_row(db, user, kb_id, row)
-                    if imported.embedding_status != 1:
+                    imported = self._upsert_import_row(
+                        db, user, kb_id, row, embed=not defer_embedding
+                    )
+                    if defer_embedding:
+                        imported_codes.append(imported.code)
+                    elif imported.embedding_status != 1:
                         vector_failed += 1
                 if existed:
                     updated += 1
@@ -284,9 +299,51 @@ class KnowledgePointService:
                 skipped += 1
                 errors.append({"row": row["_row_number"], "field": "import", "message": str(exc)[:200]})
         db.commit()
+
+        if defer_embedding and imported_codes:
+            # 大批量导出的性能优化：逐条 encode 太慢，改为分批向量化（每批 64 条）
+            embedded = self._index_kps_bulk(db, imported_codes)
+            print(f"[import] 批量向量化完成 {embedded}/{len(imported_codes)} 条")
+
         result.update({"created": created, "updated": updated, "skipped": skipped,
                        "vector_failed": vector_failed, "errors": errors[:100]})
         return result
+
+    def _index_kps_bulk(self, db: Session, codes: List[str], batch_size: int = 64) -> int:
+        """按 code 批量写入知识点向量（与 reindex_all 的向量契约保持一致）。"""
+        from app.rag.embedder import get_embedder
+        from app.rag.indexer import indexer
+
+        kps = db.scalars(select(KnowledgePoint).where(KnowledgePoint.code.in_(codes))).all()
+        embedder = get_embedder()
+        done = 0
+        for i in range(0, len(kps), batch_size):
+            batch = kps[i : i + batch_size]
+            vectors = embedder.encode([f"{kp.title}\n{kp.content}" for kp in batch])
+            rows = []
+            for kp, vec in zip(batch, vectors):
+                rows.append(
+                    {
+                        "pk": f"kp_{kp.id}",
+                        "embedding": vec,
+                        "source_type": "knowledge_point",
+                        "source_id": kp.id,
+                        "kb_id": kp.kb_id,
+                        "document_id": kp.primary_document_id or 0,
+                        "category": kp.category,
+                        "timeliness": kp.timeliness,
+                        "article_no": kp.article_no or "",
+                        "page_no": 0,
+                        "chunk_index": -1,
+                        "publish_year": kp.effective_date.year if kp.effective_date else 0,
+                        "content": f"{kp.title}\n{kp.content}",
+                    }
+                )
+                kp.embedding_status = 1
+            indexer.upsert(rows)
+            db.commit()
+            done += len(rows)
+        return done
 
     def export(self, db: Session, kb_id: Optional[int]) -> List[dict]:
         query = select(KnowledgePoint)
@@ -657,7 +714,16 @@ class KnowledgePointService:
         return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value or ""))
 
     def _resolve_import_source(self, db: Session, kb_id: int, row: dict):
-        """Only bind a unique exact quote in the named uploaded document."""
+        """把知识点绑定到唯一来源切片。
+
+        member2 的审核表基于 docx 生成，而仓库里入库的原文是官方 PDF：
+        - 长引用（>chunk_max）会**跨 2~3 个切片**，单切片精确匹配必然 0 命中；
+        - 相邻切片有 80 字重叠，短引用会命中**多个**切片。
+        这两种都不该判为「需人工确认」，处理方式：
+        - 多命中 → 绑定「引用起点最早出现」的那片（重叠时正确归属）；
+        - 0 命中 → 在相邻 2~3 片拼接窗口里找，取窗口首片，页码按整段窗口校验。
+        仍找不到才报错（真正的引用不一致）。
+        """
         filename = (row.get("source_file") or "").strip()
         quote = row.get("quote_text") or ""
         if not filename and not quote:
@@ -668,18 +734,71 @@ class KnowledgePointService:
             Document.file_name == filename, Document.status == "ready")).all()
         if len(docs) != 1:
             raise ValueError("来源文件未入库或版本不唯一")
-        candidates = db.scalars(select(DocumentChunk).where(DocumentChunk.document_id == docs[0].id)).all()
+        candidates = sorted(
+            db.scalars(select(DocumentChunk).where(DocumentChunk.document_id == docs[0].id)).all(),
+            key=lambda c: c.chunk_index,
+        )
         normalized = self._normalize_quote(quote)
-        matches = [chunk for chunk in candidates if normalized in self._normalize_quote(chunk.raw_content)]
-        if len(matches) != 1:
-            raise ValueError(f"原文引用匹配到{len(matches)}个切片，需人工确认")
+        texts = [self._normalize_quote(c.raw_content) for c in candidates]
+
+        # ① 单切片精确匹配
+        hits = [(i, texts[i].find(normalized)) for i in range(len(candidates)) if normalized in texts[i]]
+        target = None
+        page_range = None
+        if hits:
+            # 多命中（切片重叠）：取引用起点最靠前的切片
+            best = min(hits, key=lambda pair: (pair[1], candidates[pair[0]].chunk_index))
+            target = candidates[best[0]]
+            page_range = (target.page_start, target.page_end)
+        else:
+            # ② 跨切片：相邻 2~3 片拼接后再找，绑定窗口首片
+            for width in (2, 3):
+                for start in range(0, len(candidates) - width + 1):
+                    window = "".join(texts[start:start + width])
+                    if normalized and normalized in window:
+                        target = candidates[start]
+                        page_range = (
+                            min(c.page_start or 0 for c in candidates[start:start + width]),
+                            max(c.page_end or 0 for c in candidates[start:start + width]),
+                        )
+                        break
+                if target is not None:
+                    break
+        if target is None:
+            # ③ 引用被表格/OCR 截断导致整段对不上：退化为「前 120 字定位」。
+            #    只要开头能唯一定位，就说明知识点确实出自该处，尾部差异由解析造成。
+            prefix = normalized[:120]
+            if prefix:
+                prefix_hits = [
+                    (i, texts[i].find(prefix)) for i in range(len(candidates)) if prefix in texts[i]
+                ]
+                if prefix_hits:
+                    best = min(prefix_hits, key=lambda pair: (pair[1], candidates[pair[0]].chunk_index))
+                    target = candidates[best[0]]
+                    page_range = (target.page_start, target.page_end)
+        if target is None:
+            # ④ 最后兜底：按条号唯一定位（引用文本被解析破坏，但条号仍可锚定）
+            article = (row.get("article_no") or "").strip()
+            if article and not any(ch in article for ch in "~～,，"):
+                art_hits = [
+                    c
+                    for c in candidates
+                    if article in (c.article_no or "")
+                    or article in self._normalize_quote(c.raw_content)
+                ]
+                if len(art_hits) == 1:
+                    target = art_hits[0]
+                    page_range = (target.page_start, target.page_end)
+        if target is None:
+            raise ValueError("原文引用匹配到0个切片，需人工确认")
+
         try:
-            page = int(row.get("page_no") or matches[0].page_start)
+            page = int(row.get("page_no") or target.page_start)
         except (ValueError, TypeError):
             raise ValueError("页码必须为整数")
-        if not matches[0].page_start <= page <= matches[0].page_end:
+        if page_range and not (page_range[0] <= page <= page_range[1]):
             raise ValueError("引用页码不在来源切片范围")
-        return matches[0]
+        return target
 
     @staticmethod
     def _parse_import_file(file_name: str, data: bytes) -> List[dict]:
@@ -744,7 +863,9 @@ class KnowledgePointService:
             return "status", "只有 verify_status=passed 才能发布"
         return None
 
-    def _upsert_import_row(self, db: Session, user: User, kb_id: int, row: dict) -> KnowledgePoint:
+    def _upsert_import_row(
+        self, db: Session, user: User, kb_id: int, row: dict, embed: bool = True
+    ) -> KnowledgePoint:
         from app.utils.time import parse_date
 
         code = (row.get("code") or "").strip()
@@ -801,7 +922,8 @@ class KnowledgePointService:
         # Keep the imported record searchable using the same vector contract
         # as document chunks. Source binding is handled separately because a
         # spreadsheet page/article reference may match multiple chunks.
-        self._index_kp(kp)
+        if embed:
+            self._index_kp(kp)
         return kp
 
 

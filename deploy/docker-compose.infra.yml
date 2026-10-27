@@ -1,0 +1,168 @@
+# =============================================================================
+#  仅基础设施编排 —— 立即可用，无需 backend/ frontend/ 目录
+#
+#  用途：
+#    1. 后端开发期，用 Docker 提供 MySQL 8 + Milvus 2.4，应用在本机以 uvicorn 直跑；
+#    2. 环境预检：先确认 MySQL 中文全文索引与 Milvus 连接均正常，再写应用代码；
+#    3. 模型/依赖下载耗时较长，提前把镜像拉好，避免联调当天卡在基础环境。
+#
+#  用法：
+#    cd deploy
+#    cp .env.example .env
+#    docker compose -f docker-compose.infra.yml up -d
+#    docker compose -f docker-compose.infra.yml ps
+#
+#  验证：
+#    MySQL ：docker exec -it finrag-mysql mysql -ufinrag -p finrag -e "SHOW TABLES;"
+#    Milvus：页面打开 Attu http://localhost:3000（或在本地 python 中用 pymilvus 连接）
+#    健康  ：docker inspect --format '{{.State.Health.Status}}' finrag-mysql finrag-milvus
+#
+#  连接参数（本地应用使用）：
+#    MySQL  : 127.0.0.1:3306   库 finrag   用户/密码见 .env
+#    Milvus : 127.0.0.1:19530
+# =============================================================================
+
+name: finrag-infra
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: finrag-etcd
+    restart: unless-stopped
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - ./volumes/etcd:/etcd
+    command: >
+      etcd -advertise-client-urls=http://127.0.0.1:2379
+           -listen-client-urls http://0.0.0.0:2379
+           --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+    networks: [finrag-net]
+
+  minio:
+    # 说明：官方 minio/minio 镜像已从 Docker Hub 下线（2025 年起迁移至需登录的 quay.io），
+    #       此处改用 Bitnami 打包的同版本 MinIO 镜像；可通过 MINIO_IMAGE 覆盖。
+    image: ${MINIO_IMAGE:-bitnamilegacy/minio:latest}
+    container_name: finrag-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_API_PORT_NUMBER: "9000"
+      MINIO_CONSOLE_PORT_NUMBER: "9001"
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${MINIO_HOST_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
+    volumes:
+      - ./volumes/minio:/bitnami/minio/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+    networks: [finrag-net]
+
+  milvus:
+    image: milvusdb/milvus:${MILVUS_VERSION:-v2.4.9}
+    container_name: finrag-milvus
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      COMMON_STORAGETYPE: minio
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./volumes/milvus:/var/lib/milvus
+    ports:
+      - "${MILVUS_HOST_PORT:-19530}:19530"
+      - "${MILVUS_METRICS_HOST_PORT:-9091}:9091"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 120s
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    logging: *default-logging
+    networks: [finrag-net]
+
+  mysql:
+    image: mysql:8.0
+    container_name: finrag-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-finrag_root_2025}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-finrag}
+      MYSQL_USER: ${MYSQL_USER:-finrag}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-finrag_pass_2025}
+      TZ: ${TZ:-Asia/Shanghai}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+      - --ngram_token_size=2
+      - --max-connections=300
+      - --innodb-buffer-pool-size=512M
+    ports:
+      - "${MYSQL_HOST_PORT:-3306}:3306"
+    volumes:
+      - ./volumes/mysql:/var/lib/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    logging: *default-logging
+    networks: [finrag-net]
+
+  attu:
+    image: zilliz/attu:${ATTU_VERSION:-v2.4}
+    container_name: finrag-attu
+    restart: unless-stopped
+    environment:
+      MILVUS_URL: milvus:19530
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${ATTU_HOST_PORT:-3000}:3000"
+    depends_on:
+      milvus:
+        condition: service_healthy
+    logging: *default-logging
+    networks: [finrag-net]
+
+networks:
+  finrag-net:
+    name: finrag-net-infra
+    driver: bridge

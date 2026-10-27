@@ -13,7 +13,15 @@ frontend/.env.local
 *.key
 
 # ---- 运行时数据与卷（体积大、且含真实制度原文） ----
-data/
+# data/ 下只有「知识点候选」与「文档登记」两份交付物入库，
+# 其余（上传原件、OCR 缓存、模型权重、评测集）一律忽略。
+data/*
+!data/knowledge_points/
+!data/metadata/
+data/knowledge_points/*
+!data/knowledge_points/knowledge_points_candidates.xlsx
+data/metadata/*
+!data/metadata/document_registry.xlsx
 deploy/data/
 volumes/
 deploy/volumes/
@@ -35,6 +43,9 @@ data/eval/*.xlsx
 __pycache__/
 *.py[cod]
 *$py.class
+backend/jieba.cache
+backend/pip-unpack-*/
+backend/uv-install.log
 *.so
 .Python
 build/

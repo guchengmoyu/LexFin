@@ -4,7 +4,7 @@ from __future__ import annotations
 import random
 import string
 from datetime import date, datetime
-from typing import Optional
+from typing import Any, Optional
 
 
 def now() -> datetime:
@@ -20,13 +20,25 @@ def fmt_date(d: Optional[date]) -> Optional[str]:
     return d.strftime("%Y-%m-%d") if d else None
 
 
-def parse_date(value: Optional[str]) -> Optional[date]:
-    if not value:
+def parse_date(value: Any) -> Optional[date]:
+    """解析日期：兼容 Excel 日期对象、ISO 8601（含 Z 时区）与常见中文/分隔符写法。"""
+    if value is None or value == "":
         return None
-    value = value.strip()
-    for pattern in ("%Y-%m-%d", "%Y/%m/%d", "%Y年%m月%d日", "%Y.%m.%d"):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    # Excel 写出的 ISO 8601，如 2018-07-01T00:00:00.000Z
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    except ValueError:
+        pass
+    for pattern in ("%Y-%m-%d", "%Y/%m/%d", "%Y年%m月%d日", "%Y.%m.%d", "%Y%m%d"):
         try:
-            return datetime.strptime(value, pattern).date()
+            return datetime.strptime(text, pattern).date()
         except ValueError:
             continue
     return None
