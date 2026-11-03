@@ -139,6 +139,24 @@ def test_empty_inputs_return_empty():
 
 
 @pytest.mark.unit
+def test_rrf_fuse_multi_sums_weighted_channels(make_item):
+    """多路融合（检索式扩展）：每路权重独立，同实体跨路累加。"""
+    from app.rag.retriever.hybrid_retriever import rrf_fuse_multi
+
+    only_vec = make_item(source_type="chunk", source_id=1, timeliness="effective")
+    vec_and_expanded = make_item(source_type="chunk", source_id=2, timeliness="effective")
+    fused = rrf_fuse_multi(
+        [([only_vec], 0.6), ([vec_and_expanded], 0.4), ([vec_and_expanded], 0.3)],
+        rrf_k=K,
+        timeliness_weights=TW,
+    )
+    by_id = {i.source_id: i.score for i in fused}
+    assert by_id[1] == pytest.approx(0.6 / (K + 1))
+    assert by_id[2] == pytest.approx(0.4 / (K + 1) + 0.3 / (K + 1))
+    assert [i.source_id for i in fused] == [2, 1]
+
+
+@pytest.mark.unit
 def test_stable_sort_by_source_type_and_id(make_item):
     """同分时按 (source_type, source_id) 稳定排序。"""
     # 同分不同 source_id → 按 source_id 升序

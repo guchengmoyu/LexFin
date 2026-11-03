@@ -45,6 +45,12 @@ const router = createRouter({
 router.beforeEach((to) => {
   const auth = useAuthStore()
   if (to.meta.requiresAuth && !auth.isLoggedIn) {
+    // 未登录访问首页/根路径时会落到默认页 /chat，此时直接去登录页，
+    // 不附加 redirect 参数，保证地址栏是干净的 http://host/#/login；
+    // 只有访问具体深链（如 #/documents）才带 redirect，登录后跳回原页面。
+    if (to.fullPath === '/chat' || to.fullPath === '/') {
+      return { name: 'login' }
+    }
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (to.name === 'login' && auth.isLoggedIn) {

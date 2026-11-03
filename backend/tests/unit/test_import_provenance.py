@@ -28,11 +28,33 @@ def test_wrong_page_is_rejected(page):
             {'source_file':'source.pdf', 'quote_text':'制度事实', 'page_no':page})
 
 
-def test_ambiguous_quote_is_not_guessed():
-    chunk = SimpleNamespace(raw_content='制度事实', page_start=2, page_end=3)
+def test_overlapping_hits_bind_earliest_chunk():
+    """切片重叠（80 字 overlap）导致的多命中：取引用起点最靠前的切片。
+
+    这是导入兜底规则①（docs/03 §2.4）：相邻窗口里同一句引用会重复出现，
+    属于正常现象，不应报歧义；真正的歧义是同一引用出现在互不相邻的切片。
+    """
+    first = SimpleNamespace(raw_content='制度事实', page_start=2, page_end=3)
+    second = SimpleNamespace(raw_content='制度事实的补充说明', page_start=3, page_end=4)
+    resolved = KnowledgePointService()._resolve_import_source(
+        SourceDB([first, second]), 1,
+        {'source_file':'source.pdf', 'quote_text':'制度事实', 'page_no':'3'},
+    )
+    assert resolved is first
+
+
+def test_distant_duplicate_quote_is_not_guessed():
+    """同一引用出现在互不相邻的切片（max-min > 2）→ 真实歧义，必须人工确认。"""
+    chunks = [SimpleNamespace(raw_content='制度事实', page_start=2, page_end=3)]
+    chunks += [
+        SimpleNamespace(raw_content=f'第{i}页其他内容', page_start=i, page_end=i)
+        for i in (3, 4, 5, 6)
+    ]
+    chunks.append(SimpleNamespace(raw_content='制度事实', page_start=9, page_end=9))
     with pytest.raises(ValueError):
-        KnowledgePointService()._resolve_import_source(SourceDB([chunk, chunk]), 1,
-            {'source_file':'source.pdf', 'quote_text':'制度事实'})
+        KnowledgePointService()._resolve_import_source(
+            SourceDB(chunks), 1, {'source_file':'source.pdf', 'quote_text':'制度事实'},
+        )
 
 
 def test_missing_document_is_rejected():

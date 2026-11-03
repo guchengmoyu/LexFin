@@ -80,6 +80,8 @@ class KpSourceType(str, Enum):
 
 class AnswerType(str, Enum):
     answered = "answered"
+    #: 检索到相关条文，但模型未能给出直接结论（docs/05 §5「部分命中」）
+    partial = "partial"
     refused = "refused"
     error = "error"
     clarify = "clarify"

@@ -84,7 +84,7 @@ services:
     networks: [finrag-net]
 
   milvus:
-    image: milvusdb/milvus:${MILVUS_VERSION:-v2.4.9}
+    image: milvusdb/milvus:${MILVUS_VERSION:-v2.5.10}
     container_name: finrag-milvus
     restart: unless-stopped
     command: ["milvus", "run", "standalone"]

@@ -62,12 +62,71 @@ class VectorIndexer:
                 ]
             )
             col.flush()
+            self._bm25_upsert(rows)
             return len(rows)
         except BizError:
             raise
         except Exception as exc:
             logger.exception("Milvus upsert 失败")
             raise BizError(ErrorCode.VECTOR_ERROR, "向量库写入失败，请稍后重试") from exc
+
+    # ------------------------------------------------------- BM25 双写（docs/05 §3.2.1）
+    def _bm25_upsert(self, rows: List[Dict[str, Any]]) -> None:
+        """同步写 Milvus 2.5 原生 BM25 集合；失败只告警，不影响主链路。"""
+        if not settings.bm25_dual_write:
+            return
+        try:
+            from app.db import milvus_bm25
+
+            doc_meta = self._document_meta(rows)
+            bm25_rows = []
+            for r in rows:
+                doc = doc_meta.get(int(r.get("document_id") or 0))
+                content = (r.get("content") or "")[:8000]
+                bm25_rows.append(
+                    {
+                        "pk": r["pk"],
+                        "source_type": r["source_type"],
+                        "source_id": int(r["source_id"]),
+                        "kb_id": int(r["kb_id"] or 0),
+                        "document_id": int(r.get("document_id") or 0),
+                        "category": r.get("category", ""),
+                        "timeliness": r.get("timeliness", "unknown"),
+                        "article_no": _article_no_for_milvus(r.get("article_no")),
+                        "page_no": int(r.get("page_no") or 0),
+                        "chunk_index": int(r.get("chunk_index") or -1),
+                        "publish_year": int(r.get("publish_year") or 0),
+                        "doc_title": getattr(doc, "title", None),
+                        "doc_no": getattr(doc, "doc_no", None),
+                        "issuing_authority": getattr(doc, "issuing_authority", None),
+                        "content": content,
+                        "text": content,
+                    }
+                )
+            milvus_bm25.upsert_rows(bm25_rows)
+        except Exception as exc:  # pragma: no cover - 依赖外部服务
+            logger.warning("BM25 双写失败（已跳过）：{}", exc)
+
+    @staticmethod
+    def _document_meta(rows: List[Dict[str, Any]]) -> Dict[int, Any]:
+        ids = {int(r.get("document_id") or 0) for r in rows}
+        ids.discard(0)
+        if not ids:
+            return {}
+        try:
+            from sqlalchemy import select
+
+            from app.db.session import get_session_factory
+            from app.models.document import Document
+
+            with get_session_factory()() as db:
+                return {
+                    doc.id: doc
+                    for doc in db.scalars(select(Document).where(Document.id.in_(ids))).all()
+                }
+        except Exception as exc:  # pragma: no cover
+            logger.warning("BM25 双写查询文档元数据失败：{}", exc)
+            return {}
 
     # ------------------------------------------------------------------ 删除
     def delete_by_document(self, document_id: int) -> int:
@@ -84,10 +143,22 @@ class VectorIndexer:
             col = self._collection()
             col.delete(expr)
             col.flush()
+            self._bm25_delete(expr)
             return 0
         except Exception as exc:
             logger.exception("Milvus delete 失败 expr={}", expr)
             raise BizError(ErrorCode.VECTOR_ERROR, "向量库删除失败，请稍后重试") from exc
+
+    @staticmethod
+    def _bm25_delete(expr: str) -> None:
+        if not settings.bm25_dual_write:
+            return
+        try:
+            from app.db import milvus_bm25
+
+            milvus_bm25.delete(expr)
+        except Exception as exc:  # pragma: no cover - 依赖外部服务
+            logger.warning("BM25 删除失败（已跳过）expr={}：{}", expr, exc)
 
     # ------------------------------------------------------------------ 检索
     def search(

@@ -83,7 +83,7 @@ services:
     networks: [finrag-net]
 
   milvus:
-    image: milvusdb/milvus:${MILVUS_VERSION:-v2.4.9}
+    image: milvusdb/milvus:${MILVUS_VERSION:-v2.5.10}
     container_name: finrag-milvus
     restart: unless-stopped
     command: ["milvus", "run", "standalone"]
@@ -173,7 +173,9 @@ services:
       - "${BACKEND_HOST_PORT:-8000}:8000"
     volumes:
       # 原始文档 / OCR 缓存 / 嵌入模型权重 / 日志，全部持久化，容器重建不丢
-      - ./data:/data
+      # 与本地直跑共用仓库根的 data/（backend/.env 的 DATA_DIR 也指向它），
+      # 这样容器能直接复用已下载的 bge 权重与已上传的原文。
+      - ../data:/data
     depends_on:
       mysql:
         condition: service_healthy

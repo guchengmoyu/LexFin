@@ -105,6 +105,89 @@ Prompt（改写专用，temperature=0，max_tokens=100）：
 
 **降级**：改写调用超时（> 800ms）或失败 → 直接用原始问题检索，不阻塞主链路。
 
+### 2.4 检索式扩展（口语化问题兜底，默认开启）
+
+**遇到的问题**：联调时用户用口语提问，例如「证券的定义是什么？」「如果我没有获得营业执照，
+还能继续营业嘛」，系统稳定返回「知识库未命中，已拒答」。定位到两个原因：
+
+1. **关键词通道被泛词带偏**：MySQL ngram FULLTEXT 是 NATURAL LANGUAGE MODE（OR 语义），
+   口语词「定义 / 没有 / 继续 / 获得」在制度语料里极其罕见，IDF 极高，直接压过「证券」
+   这类领域词，召回一堆无关的百分比表格切片。
+2. **向量通道对「泛问」不敏感**：BGE 对「X 的定义是什么」这类元问题给出的近邻是法条的
+   相邻条款，真正的定义条款（如《证券法》第二条）排不进 Top-20。
+
+**方案**：先用 LLM 把口语问题改写成 2~3 条**制度原文口吻**的检索式，再对每条检索式分别走
+双通道检索，最后按变体权重做**加权 RRF** 融合。
+
+```
+Prompt（扩展专用，temperature=0，max_tokens=160，超时 query_expansion_timeout_ms）：
+─────────────────────────────────────────────
+你是金融制度检索助手。用户会用口语提一个问题，请把它改写成 2~3 条
+「制度原文口吻」的检索式，用于全文检索与语义检索。
+要求：使用法规常用表述（如「未经批准擅自设立」「予以取缔」「适用本法」），
+每条 10~30 字，不要解释，只输出 JSON 字符串数组。
+
+【用户问题】{question}
+─────────────────────────────────────────────
+示例：「如果我没有获得营业执照，还能继续营业嘛」
+→ ["未取得营业执照从事经营活动", "未依法登记擅自从事经营予以取缔", "无照经营查处取缔"]
+```
+
+**融合权重**：原始问题 1.0，第 i 条扩展式 `max(0.3, QUERY_EXPANSION_WEIGHT - 0.15 × (i-1))`
+（默认 `QUERY_EXPANSION_WEIGHT=0.8` → 0.8 / 0.65 / 0.5），避免扩展式喧宾夺主。
+
+**降级**：扩展开关关闭、问题过长（> `QUERY_EXPANSION_MAX_CHARS`，默认 80 字）、
+LLM 超时或解析失败 → 只用原始问题检索（单查询走原 `retrieve()`，行为与改造前完全一致）。
+结果按问题文本做 256 条 LRU 缓存，同一问题的追问不重复付费。
+
+**实测**（8080 全栈，admin）：
+
+| 问题 | 改造前 | 改造后 |
+| --- | --- | --- |
+| 证券的定义是什么？ | refused，0 分，7.7s | partial，0.71，2.1s，引用《证券法》第二条/第一百二十条 |
+| 如果我没有获得营业执照，还能继续营业嘛 | refused，0 分，4.0s | partial，0.91，4.8s，引用《保险法》等 3 条 |
+| 银行最少要留多少本钱才够 | refused | answered，0.91，5.7s，引用资本管理办法 5%/6%/8% |
+| 核心一级资本充足率的最低要求是多少？（对照） | answered，1.0 | answered，1.0，2.8s（无回归） |
+
+### 2.5 口语化检索评测与「零成本三件套」（量化）
+
+§2.4 是定性修复。为了知道「还差多少、下一步该先做哪一项」，补了一套可复跑的评测：
+
+- **评测集**：`backend/scripts/build_eval_set.py` 从 1225 条知识点里按库分层抽样 60 条
+  （banking/securities/insurance 各 20），用 LLM 把每条条文改写成「普通人会怎么问」的口语问题，
+  标准答案 = `(doc_title, article_no)`，落在 `backend/tests/data/eval_colloquial.jsonl`。
+  优点：不需要人工写 60 题，问题里也不会混进法条原文。
+- **评测脚本**：`backend/scripts/eval_retrieval.py`，逐条走真实检索链路，判定 Top-k 里是否命中
+  同一条号，输出 `hit@1/@3/@5/@10、doc_hit@5、MRR、empty_rate、avg_ms`；开关可单独 A/B
+  `--instruction / --synonyms / --expand / --rerank`。
+
+**实测（60 题，CPU，单条不含 LLM 生成答案的时延）**：
+
+| 配置 | hit@1 | hit@3 | hit@5 | MRR | 平均耗时 |
+| --- | --- | --- | --- | --- | --- |
+| 基线（无三件套） | 0.633 | 0.817 | 0.900 | 0.736 | 0.71s |
+| + 查询指令前缀 | **0.717** | 0.883 | 0.933 | 0.808 | 0.75s |
+| + 同义词归一（追加术语） | 0.617 | 0.767 | 0.883 | 0.715 | 0.72s |
+| + 同义词归一（仅替换） | 0.633 | 0.817 | 0.900 | 0.736 | 0.70s |
+| + 检索式扩展（§2.4） | 0.683 | 0.917 | 0.933 | 0.789 | 3.06s |
+| + bge-reranker-base 重排 | 0.700 | 0.867 | 0.900 | 0.793 | 2.76s |
+| 指令 + 扩展 + 同义替换（**推荐**） | **0.767** | **0.933** | **0.983** | **0.853** | 3.20s |
+| 再加 rerank（全开） | 0.733 | 0.933 | 0.950 | 0.842 | 5.12s |
+
+**结论（已落到默认配置）**：
+
+1. **查询指令前缀**是该配置默认值（`EMBEDDING_QUERY_INSTRUCTION`），只加在 `encode_query` 侧，
+   入库向量不变，hit@1 +8.4pt，几乎没有额外耗时。
+2. **检索式扩展**是提升最大的一项（hit@3 +10pt），代价是每问多一次 LLM 调用（≈2.3s），
+   因此只在问题较短且没有条号/文号线索时触发。
+3. **同义词归一**只保留「替换」，「追加同义术语」实测反而掉 5pt（OR 语义引入噪声），
+   默认 `SYNONYM_APPEND_TERMS=false`。
+4. **rerank 默认仍关闭**：单独开启能把 hit@1 从 0.633 提到 0.700，但与扩展叠加后不升反降
+   （0.767 → 0.733）且多 2s；bge-reranker-base 在这批短查询上不如「扩展 + RRF」有效。
+   若要用，建议 `RERANK_TOP_N ≥ 10`，避免重排后的截断把正确条文挤出去。
+5. 剩余空间：hit@10 已达 1.0，说明**召回不是瓶颈、排序才是**；下一步优先换 bge-m3 或
+   Milvus 2.5 原生 BM25，而不是继续加改写环节。
+
 ## 3. 检索通道
 
 ### 3.1 通道 A · 向量语义检索
@@ -142,7 +225,7 @@ def build_filter(kb_ids, categories, timeliness, source_types) -> str:
 用户未指定时效时**不过滤已废止条文**，而是靠 §4 的加权降权 + §6 的提示，
 因为「某规定已废止，替代规定是什么」本身就是高频业务问题。
 
-### 3.2 通道 B · 关键词检索（MySQL ngram FULLTEXT）
+### 3.2 通道 B · 关键词检索（Milvus 2.5 BM25 为主，MySQL ngram 保留可回切）
 
 ```sql
 -- 切片通道
@@ -168,6 +251,71 @@ LIMIT 20;
 **兜底**：ngram 分词对 < 2 字的查询词或含特殊符号的查询可能零命中，
 此时降级为 `LIKE '%词%'` 逐词 OR 查询（同样限制 LIMIT 20），并记录日志统计降级比例。
 若降级比例 > 30%，说明分词策略需要调整。
+
+#### 3.2.1 Milvus 2.5 原生 BM25（当前默认）
+
+**为什么换**：MySQL ngram FULLTEXT 的 `NATURAL LANGUAGE MODE` 是 **OR 语义**，
+口语问题里多出来的泛词（「定义」「没有」「继续」）IDF 高、又一定命中，
+会把真正的领域条文挤出前 20。BM25 是带饱和与长度归一的概率排序，
+「命中越多、越罕见」才排得越高，正好补上这个缺口。
+
+**实现**（`backend/app/db/milvus_bm25.py`）：
+
+| 项 | 取值 |
+| --- | --- |
+| 集合 | `finrag_bm25_v1`（与向量集合 `finrag_embedding_v1` 分离，独立建/删） |
+| 主键 | 与向量集合一致：`chunk_{id}` / `kp_{id}` |
+| 全文字段 | `text`（= 切片 content；KP 为「标题
+正文」），`enable_analyzer=True` |
+| 分词器 | `analyzer_params={"type": "chinese"}`（jieba + 中文标点过滤），由 `BM25_ANALYZER` 覆盖 |
+| 稀疏字段 | `sparse` + `Function(FunctionType.BM25)`，服务端自动生成 |
+| 索引 | `SPARSE_INVERTED_INDEX`，`metric_type=BM25`；`kb_id/source_type/document_id` 建 INVERTED |
+| 写入 | `upsert_rows`，100 条一批；`text` 截断 8192 字 |
+| 可选字段 | `category/timeliness/article_no/page_no/chunk_index/publish_year/doc_title/doc_no/issuing_authority/document_id` 均 `nullable=True`（知识点可能没有文号、页码或主文档，缺字段时不能整行插入失败） |
+
+**开关与排列组合**（`backend/app/core/config.py`）：
+
+```ini
+KEYWORD_BACKEND=bm25      # mysql = ngram FULLTEXT（旧） / bm25 = Milvus 原生 / both = 两路按秩融合
+BM25_COLLECTION=finrag_bm25_v1
+BM25_ANALYZER=chinese     # 可切 standard 做对照
+BM25_DUAL_WRITE=true      # 入库时同步写 BM25 集合，切换后端不需要重建
+```
+
+- 检索分流在 `hybrid_retriever._keyword_channel`：单点决定走哪一路，`retrieve` 与 `retrieve_multi` 共用；
+- `bm25_retriever.search_bm25` 与 `keyword_retriever.search_keyword` 同签名（`QueryInfo → List[RetrievedItem]`），
+  条号/文号线索先用标量过滤精确取行置顶（对齐 MySQL 版 `_clue_search`），再去重合并；
+- 索引构建：`python scripts/build_bm25_index.py [--drop] [--dry-run] [--analyzer standard]`，
+  从 MySQL 灌 950 切片 + 1225 知识点（当前 2175 条与向量集合一一对应）；
+- 入库双写：`VectorIndexer.upsert` 成功后同步写 BM25（失败只告警，不影响主链路），删除同步 `delete`。
+
+**60 题口语评测**（`scripts/eval_retrieval.py --keyword mysql|bm25|both`，同一批问题、同一份数据）：
+
+| 关键词通道 | 检索配置 | hit@1 | hit@3 | hit@5 | hit@10 | MRR | avg |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| MySQL ngram | 裸 | 0.633 | 0.817 | 0.900 | 0.917 | 0.736 | 0.76s |
+| MySQL ngram | +指令前缀 | 0.717 | 0.883 | 0.933 | 0.967 | 0.808 | 0.76s |
+| MySQL ngram | +指令+扩展 | 0.767 | **0.933** | **0.983** | — | 0.853 | 3.2s |
+| Milvus BM25 | +指令前缀 | 0.750 | 0.867 | 0.917 | 0.967 | 0.818 | 0.68s |
+| **Milvus BM25** | **+指令+扩展** | **0.833** | 0.883 | 0.950 | **1.000** | **0.880** | 3.0s |
+| both（两路融合） | +指令+扩展 | 0.800 | 0.917 | 0.983 | 1.000 | 0.870 | 3.4s |
+
+**结论**：
+
+1. 只开指令前缀时，BM25 略优于 ngram（hit@1 0.750 vs 0.717），差距来自短语匹配；
+2. 叠加检索式扩展后差距拉开：**BM25 hit@1 0.833 vs MySQL 0.767（+6.6pt）、MRR 0.880 vs 0.853、
+   hit@10 1.000（60 题全量召回）**——扩展出来的检索式是「短语型」的，
+   BM25 对短语命中更敏感，ngram 的 OR 语义则会把短语拆成噪声；
+3. MySQL ngram 仍在 hit@3/hit@5 上领先 3~5pt（0.933/0.983 vs 0.883/0.950），
+   即「正确答案在前五」的比例更高，但「第一名就是正确答案」的比例更低——这正是排序质量差异；
+4. `both`（两路按秩融合）把 hit@5 追平 ngram（0.983）、hit@10 保持 1.000，
+   hit@1 仍比纯 BM25 低 3.3pt（两路第一名互相挤位），额外耗时约 0.4s；
+5. 因此默认 `KEYWORD_BACKEND=bm25`（首位命中与全量召回最好），
+   追求「Top-5 里尽量不漏」可切 `both`，排查历史问题时可用 `mysql` 回切旧实现。
+
+**查询串怎么喂给 BM25**（`bm25_retriever.search_bm25`）：整句与关键词串两路都检索、按秩融合。
+单用整句在无扩展时更好（hit@1 0.733 vs 0.667），单用关键词串在有扩展时更好（0.850 vs 0.800），
+两路融合后取二者之间的稳定值（+扩展 0.833 / 无扩展 0.750），避免依赖「扩展是否成功」。
 
 ### 3.3 混合融合 · 加权 RRF（核心）
 
@@ -246,7 +394,13 @@ class BgeReranker:
 | 前置 | 两路检索均无结果 | 直接返回 `answer_type=refused`，不给 LLM |
 | 前置 | Top-1 融合分 < `RETRIEVAL_MIN_SCORE`（默认 0.30） | 直接拒答，附「建议检索词」与相关知识库提示 |
 | 前置 | 重排开启时，重排后无一条 ≥ `RERANK_MIN_SCORE` | 直接拒答 |
-| 后置 | LLM 输出中不含任何 `[n]` 角标，或明确表示无法回答 | `answer_type=refused`，丢弃 LLM 生成内容，改用模板话术 |
+| 后置 | LLM 输出中不含任何 `[n]` 角标，且检索结果为空 | `answer_type=refused`，丢弃 LLM 生成内容，改用模板话术 |
+| 后置 | LLM 输出中不含 `[n]` 角标，但检索确有结果 | `answer_type=partial`，保留 LLM 的说明文字，追加上「最相关依据」清单（Top-3 条文 + `[n]` 角标），前端标签「已检索到相关条文，证据不足以直接作答」 |
+
+**为什么要有 partial**：制度库里很多问题（如「证券的定义是什么」）本身就没有直接定义条款，
+旧逻辑会把已经正确召回的《证券法》第二条连同 LLM 的回答一起丢掉，换成「未命中」模板，
+既不诚实也浪费了召回结果。partial 只改「呈现方式」，不放松拒答边界：知识库外的问题仍然
+两路检索皆空，直接 refused。
 
 **标准拒答话术**：
 
@@ -501,6 +655,12 @@ EMBEDDING_DIM=1024
 EMBEDDING_BATCH_SIZE=32
 EMBEDDING_MAX_LENGTH=512
 EMBEDDING_NORMALIZE=true
+
+# 关键词通道（docs/05 §3.2.1）
+KEYWORD_BACKEND=bm25          # mysql / bm25 / both
+BM25_COLLECTION=finrag_bm25_v1
+BM25_ANALYZER=chinese
+BM25_DUAL_WRITE=true
 
 # 检索
 VECTOR_TOP_K=20

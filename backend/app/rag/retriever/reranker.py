@@ -29,7 +29,14 @@ class BgeReranker:
     def __init__(self, model_name: Optional[str] = None) -> None:
         from sentence_transformers import CrossEncoder
 
-        self.model = CrossEncoder(model_name or settings.rerank_model, max_length=512)
+        # 离线部署：模型与 BGE 放在同一缓存目录（EMBEDDING_CACHE_DIR），
+        # 不传 cache_dir 会去 ~/.cache/huggingface 找不到而静默降级。
+        self.model = CrossEncoder(
+            model_name or settings.rerank_model,
+            max_length=512,
+            cache_dir=settings.embedding_cache_dir,
+            device=settings.embedding_device,
+        )
 
     def rerank(
         self, query: str, items: Sequence[RetrievedItem], top_n: Optional[int] = None

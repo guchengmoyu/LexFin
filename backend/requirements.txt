@@ -22,9 +22,9 @@ langchain-core==0.3.28
 langchain-openai==0.2.14
 langchain-text-splitters==0.3.4
 
-# --- 向量库（课题指定 Milvus 2.4） ---
-pymilvus==2.4.9
-# pymilvus 2.4.9 仍依赖 pkg_resources 与 environs 的旧 API：
+# --- 向量库（Milvus 2.5：原生 BM25 + chinese/jieba analyzer，见 docs/05 §3.2.1） ---
+pymilvus==2.5.4
+# pymilvus 仍依赖 pkg_resources 与 environs 的旧 API：
 # setuptools>=81 移除了 pkg_resources，marshmallow 4 移除了 __version_info__
 setuptools<81
 marshmallow<4

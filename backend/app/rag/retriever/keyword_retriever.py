@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.rag.query_rewriter import QueryInfo
+from app.rag.synonyms import apply_synonyms
 from app.rag.types import RetrievedItem
 
 #: 降级统计（进程内，运维观察用）
@@ -158,6 +159,12 @@ def search_keyword(
     """关键词检索：FULLTEXT(ngram) 两路 + 结构化线索置顶 + LIKE 兜底。"""
     limit = top_k or settings.keyword_top_k
     q = query_info.keyword_query
+    if settings.synonym_enabled:
+        # 口语 → 术语归一（docs/05 §2.4），只影响关键词通道
+        expanded = apply_synonyms(q, append=settings.synonym_append_terms)
+        if expanded != q:
+            logger.debug("关键词归一: {} → {}", q, expanded)
+            q = expanded
     raw = query_info.cleaned
     items: List[RetrievedItem] = []
 

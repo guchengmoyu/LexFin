@@ -109,13 +109,18 @@ def get_embedder() -> Embedder:
 
 
 def encode_query(text: str) -> List[float]:
-    """查询向量化 + LRU 缓存（docs/05 §10：缓存最近 QUERY_VECTOR_CACHE_SIZE 条）。"""
+    """查询向量化 + LRU 缓存（docs/05 §10：缓存最近 QUERY_VECTOR_CACHE_SIZE 条）。
+
+    查询侧指令前缀只加在这里：bge 官方建议为短查询补一句「为这个句子生成表示
+    以用于检索相关文章：」，入库向量保持原样，否则文档与查询的空间会错位。
+    """
+    instruction = (settings.embedding_query_instruction or "").strip()
     key = hashlib.md5(text.encode("utf-8")).hexdigest()
     cached = _query_cache.get(key)
     if cached is not None:
         _query_cache.move_to_end(key)
         return cached
-    vector = get_embedder().encode([text])[0]
+    vector = get_embedder().encode([f"{instruction}{text}" if instruction else text])[0]
     _query_cache[key] = vector
     while len(_query_cache) > settings.query_vector_cache_size:
         _query_cache.popitem(last=False)

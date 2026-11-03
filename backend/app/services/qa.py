@@ -31,6 +31,7 @@ from app.rag.prompt import (
     build_messages,
     build_refusal_answer,
 )
+from app.rag.query_expansion import expand_queries, should_expand
 from app.rag.query_rewriter import analyze, need_rewrite, rewrite
 from app.rag.retriever.hybrid_retriever import hybrid_retriever
 from app.rag.retriever.reranker import rerank
@@ -114,14 +115,25 @@ class QaService:
             llm = llm_factory.get_llm()
             rewritten = await rewrite(question, history, llm)
             query_info.rewritten = rewritten
+        # ②' 检索式扩展（docs/05 §2.4）：口语提问 → 制度原文式检索式。
+        # 只在短问题、无条号/文号线索时触发；失败/超时降级为单查询，不影响可用性。
+        query_infos = [query_info]
+        if should_expand(question) and not query_info.has_structured_clue:
+            try:
+                variants = await expand_queries(question, llm_factory.get_llm())
+            except Exception as exc:  # pragma: no cover - 兜底，绝不阻断问答
+                logger.debug("检索式扩展跳过: {}", exc)
+                variants = []
+            for variant in variants:
+                query_infos.append(analyze(variant))
         latency["rewrite"] = int((time.perf_counter() - t_rewrite) * 1000)
 
-        # ③ 检索（向量 + 关键词并行 + RRF + 去重）
+        # ③ 检索（向量 + 关键词并行 + RRF + 去重；扩展式走加权多路融合）
         t_retrieve = time.perf_counter()
         try:
-            items = await hybrid_retriever.retrieve(
+            items = await hybrid_retriever.retrieve_multi(
                 db,
-                query_info,
+                query_infos,
                 mode=payload.get("mode") or "hybrid",
                 kb_ids=payload.get("kb_ids"),
                 categories=payload.get("categories"),
@@ -200,15 +212,27 @@ class QaService:
             citations_used = citation_mod.resolve(answer_text, citations)
             final_answer = answer_text
             if not citations_used or self._is_refusal_text(answer_text):
-                answer_type = AnswerType.refused.value
-                # 丢弃 LLM 生成内容，改用标准拒答话术（若尚未流出文本则直接下发模板）
-                final_answer = build_refusal_answer(
-                    question, query_info.cleaned, query_info.keywords
-                )
-                if not answer_text:
+                if citations:
+                    # 证据存在但模型没给出结论：降级为「部分命中」
+                    # （docs/05 §5）——保留检索到的最相关条文与角标，而不是空拒答，
+                    # 这样用户至少能看到库里有什么、并据此改写提问。
+                    answer_type = AnswerType.partial.value
+                    evidence = self._evidence_answer(items, citations)
+                    prefix = answer_text.strip()
+                    final_answer = f"{prefix}\n\n{evidence}" if prefix else evidence
+                    citations_used = citations[:min(3, len(items))]
+                    yield ("token", {"delta": ("\n\n" if prefix else "") + evidence})
                     answer_text = final_answer
-                    yield ("token", {"delta": answer_text})
-                citations_used = []
+                else:
+                    answer_type = AnswerType.refused.value
+                    # 丢弃 LLM 生成内容，改用标准拒答话术（若尚未流出文本则直接下发模板）
+                    final_answer = build_refusal_answer(
+                        question, query_info.cleaned, query_info.keywords
+                    )
+                    if not answer_text:
+                        answer_text = final_answer
+                        yield ("token", {"delta": answer_text})
+                    citations_used = []
             confidence = scorer.score(
                 answer_text, citations, [c.score for c in citations], citations_used
             )
@@ -457,6 +481,25 @@ class QaService:
     def _is_refusal_text(text: str) -> bool:
         markers = ("暂未检索到", "未检索到相关规定", "无法回答", "根据现有知识库，暂未检索到")
         return any(m in (text or "") for m in markers)
+
+    @staticmethod
+    def _evidence_answer(
+        items: Sequence[RetrievedItem], citations: Sequence[Citation], limit: int = 3
+    ) -> str:
+        """部分命中时的证据清单（docs/05 §5）：只给条文，不给结论。"""
+        lines = ["【未检索到可直接回答该问题的条文，以下为检索到的最相关依据，供参考】"]
+        for cite in list(citations)[:limit]:
+            head = f"[{cite.cite_index}]《{cite.doc_title or '未知文档'}》"
+            if cite.article_no:
+                head += cite.article_no
+            if cite.page_no:
+                head += f"（第 {cite.page_no} 页）"
+            snippet = (cite.snippet or "").strip().replace("\n", " ")
+            if len(snippet) > 120:
+                snippet = snippet[:120] + "……"
+            lines.append(f"{head}：{snippet}")
+        lines.append("如需直接结论，建议补充主体、业务环节或指标名称后再提问。")
+        return "\n".join(lines)
 
     def _save_assistant_placeholder(
         self, db: Session, session: QASession, user: User, user_msg: QAMessage, payload: dict

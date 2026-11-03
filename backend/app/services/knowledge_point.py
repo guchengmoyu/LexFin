@@ -736,7 +736,7 @@ class KnowledgePointService:
             raise ValueError("来源文件未入库或版本不唯一")
         candidates = sorted(
             db.scalars(select(DocumentChunk).where(DocumentChunk.document_id == docs[0].id)).all(),
-            key=lambda c: c.chunk_index,
+            key=lambda c: getattr(c, "chunk_index", -1),
         )
         normalized = self._normalize_quote(quote)
         texts = [self._normalize_quote(c.raw_content) for c in candidates]
@@ -746,8 +746,13 @@ class KnowledgePointService:
         target = None
         page_range = None
         if hits:
-            # 多命中（切片重叠）：取引用起点最靠前的切片
-            best = min(hits, key=lambda pair: (pair[1], candidates[pair[0]].chunk_index))
+            # 多命中：切片重叠（80 字 overlap）会让同一句引用在相邻窗口重复出现，
+            # 这属正常现象，取引用起点最靠前的切片；但命中的切片若互不相邻
+            # （间隔 > 2），说明同一句话在文档多处出现，属真实歧义，必须人工确认。
+            hit_indexes = [i for i, _ in hits]
+            if max(hit_indexes) - min(hit_indexes) > 2:
+                raise ValueError("引用在文档多处出现，需人工确认")
+            best = min(hits, key=lambda pair: (pair[1], candidates[pair[0]].chunk_index if hasattr(candidates[pair[0]], "chunk_index") else -1))
             target = candidates[best[0]]
             page_range = (target.page_start, target.page_end)
         else:
@@ -773,7 +778,7 @@ class KnowledgePointService:
                     (i, texts[i].find(prefix)) for i in range(len(candidates)) if prefix in texts[i]
                 ]
                 if prefix_hits:
-                    best = min(prefix_hits, key=lambda pair: (pair[1], candidates[pair[0]].chunk_index))
+                    best = min(prefix_hits, key=lambda pair: (pair[1], candidates[pair[0]].chunk_index if hasattr(candidates[pair[0]], "chunk_index") else -1))
                     target = candidates[best[0]]
                     page_range = (target.page_start, target.page_end)
         if target is None:

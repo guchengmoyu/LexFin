@@ -28,8 +28,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Python 依赖（先装依赖层，利用 Docker 缓存） ---
+# 国内网络默认走清华镜像；如在海网络环境可覆盖：
+#   docker compose build --build-arg PIP_INDEX_URL=https://pypi.org/simple backend
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 COPY requirements.txt ./
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" -r requirements.txt
 
 # --- 应用代码 ---
 COPY app ./app

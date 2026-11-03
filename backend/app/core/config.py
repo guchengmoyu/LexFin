@@ -90,6 +90,10 @@ class Settings(BaseSettings):
     embedding_max_length: int = 512
     embedding_normalize: bool = True
     embedding_cache_dir: str = "/data/models"
+    # 查询侧指令前缀（docs/05 §2.4）：bge 官方建议给「短查询」加指令前缀，
+    # 只在 encode_query 侧拼接，文档/知识点入库向量不受影响。
+    # 60 条口语化评测集实测：hit@1 0.633 → 0.717（docs/05 §2.5）。
+    embedding_query_instruction: str = "为这个句子生成表示以用于检索相关文章："
 
     # ---------------------------------------------------------------- 5. Rerank
     rerank_enabled: bool = False
@@ -100,6 +104,12 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------- 6. 检索
     vector_top_k: int = 20
     keyword_top_k: int = 20
+
+    # 关键词通道后端（docs/05 §3.2.1）：mysql = ngram FULLTEXT（旧），bm25 = Milvus 2.5 原生 BM25
+    keyword_backend: str = "bm25"
+    bm25_collection: str = "finrag_bm25_v1"
+    bm25_analyzer: str = "chinese"  # Milvus analyzer：chinese = jieba 分词 + 中文标点过滤
+    bm25_dual_write: bool = True  # 入库时同步写 BM25 集合，便于随时切换后端
     final_top_n: int = 5
     rrf_k: int = 60
     rrf_w_vector: float = 0.6
@@ -120,6 +130,19 @@ class Settings(BaseSettings):
     multi_turn_history_size: int = 3
     query_rewrite_timeout_ms: int = 800
     query_vector_cache_size: int = 500
+
+    # 口语化提问的检索式扩展（docs/05 §2.4）：LLM 改写为制度原文表述后多路召回
+    query_expansion_enabled: bool = True
+    query_expansion_max_queries: int = 3
+    query_expansion_timeout_ms: int = 4000
+    query_expansion_weight: float = 0.8
+    query_expansion_max_chars: int = 80
+
+    # 关键词通道的「口语 → 术语」归一（docs/05 §2.4，开关见 app/rag/synonyms.py）
+    synonym_enabled: bool = True
+    # 归一后是否追加同义术语。实测「追加」会让 hit@1 从 0.717 掉到 0.667
+    # （OR 语义引入噪声），因此默认只做替换，不追加。
+    synonym_append_terms: bool = False
 
     # ---------------------------------------------------------------- 8. 解析/OCR
     data_dir: str = "/data"

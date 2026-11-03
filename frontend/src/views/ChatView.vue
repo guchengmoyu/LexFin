@@ -429,6 +429,10 @@ onMounted(() => {
                   :class="CONF_MAP[msg.done.confidence_level]?.cls || 'gray'"
                 >{{ CONF_MAP[msg.done.confidence_level]?.label }} {{ ((msg.done.confidence ?? 0) * 100).toFixed(0) }}分</span>
                 <span
+                  v-if="msg.done.answer_type === 'partial'"
+                  class="tag yellow"
+                >已检索到相关条文，证据不足以直接作答</span>
+                <span
                   v-if="msg.done.answer_type === 'refused'"
                   class="tag yellow"
                 >知识库未命中，已拒答</span>

@@ -1,0 +1,11 @@
+# 前端构建上下文排除项（镜像里只需要源码 + package 清单）
+node_modules
+dist
+dist-ssr
+.vite
+*.log
+.env
+.env.*
+.DS_Store
+Thumbs.db
+coverage

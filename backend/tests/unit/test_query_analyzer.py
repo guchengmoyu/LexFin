@@ -58,6 +58,26 @@ def test_keywords_stopwords_filtered():
 
 
 @pytest.mark.unit
+def test_keywords_drop_colloquial_words():
+    """口语/泛化词不得进入检索串（否则 ngram OR 语义会召回噪声条文）。"""
+    kws = extract_keywords("证券的定义是什么？")
+    assert "证券" in kws
+    assert "定义" not in kws
+
+    kws2 = extract_keywords("如果我没有获得营业执照，还能继续营业嘛")
+    assert "营业执照" in kws2
+    for w in ("如果", "没有", "获得", "继续", "还能"):
+        assert w not in kws2, f"{w} 是口语词，不应进入检索串"
+
+
+@pytest.mark.unit
+def test_keywords_keep_short_domain_terms():
+    """2 字领域词（监管）不能被泛化词规则误杀。"""
+    assert "监管" in extract_keywords("LCR的监管要求")
+    assert "债券" in extract_keywords("债券的发行条件是什么")
+
+
+@pytest.mark.unit
 def test_clean_question_nfkc():
     assert clean_question("　ＬＣＲ１００％　") == "LCR100%"
     assert clean_question("流动性覆盖率１００％") == "流动性覆盖率100%"

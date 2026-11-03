@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from typing import Dict, List, Optional, Sequence, Set
 
+from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -16,6 +17,39 @@ from app.rag.retriever.keyword_retriever import search_keyword
 from app.rag.retriever.vector_retriever import search_vector
 from app.rag.types import RetrievedItem
 from app.utils.text import ngram_jaccard
+
+
+def _keyword_channel(db, query_info, kb_ids=None) -> List[RetrievedItem]:
+    """关键词通道按 settings.keyword_backend 分流（docs/05 §3.2.1）。
+
+    mysql：ngram FULLTEXT（旧实现，保留可回切）；
+    bm25：Milvus 2.5 原生 BM25；
+    both：两路都跑，按秩融合（便于排列组合实验）。
+    """
+    backend = getattr(settings, "keyword_backend", "mysql")
+    if backend == "mysql":
+        return search_keyword(db, query_info, kb_ids)
+
+    from app.rag.retriever.bm25_retriever import search_bm25
+
+    bm25_items = search_bm25(query_info, kb_ids)
+    if backend == "bm25":
+        return bm25_items
+    # both：两路按秩公平融合（各取 1/(k+rank)），保留连续 keyword_rank
+    mysql_items = search_keyword(db, query_info, kb_ids)
+    scores = {}
+    for items in (bm25_items, mysql_items):
+        for rank, item in enumerate(items, start=1):
+            key = f"{item.source_type}_{item.source_id}"
+            scores[key] = scores.get(key, 0.0) + 1.0 / (settings.rrf_k + rank)
+    pool = {f"{i.source_type}_{i.source_id}": i for i in mysql_items}
+    pool.update({f"{i.source_type}_{i.source_id}": i for i in bm25_items})
+    merged = sorted(pool.items(), key=lambda kv: scores.get(kv[0], 0.0), reverse=True)
+    out = []
+    for rank, (_key, item) in enumerate(merged, start=1):
+        item.keyword_rank = rank
+        out.append(item)
+    return out
 
 # 结构化线索精确命中加权（docs/05 §3.3）
 CLUE_BOOST = 1.5
@@ -45,6 +79,29 @@ def rrf_fuse(
     k = rrf_k if rrf_k is not None else settings.rrf_k
     wv = w_vector if w_vector is not None else settings.rrf_w_vector
     wk = w_keyword if w_keyword is not None else settings.rrf_w_keyword
+    return rrf_fuse_multi(
+        [(vector_items, wv), (keyword_items, wk)],
+        rrf_k=k,
+        timeliness_weights=timeliness_weights,
+        query_article_nos=query_article_nos,
+        query_doc_nos=query_doc_nos,
+    )
+
+
+def rrf_fuse_multi(
+    channels: Sequence[tuple],
+    *,
+    rrf_k: Optional[int] = None,
+    timeliness_weights: Optional[Dict[str, float]] = None,
+    query_article_nos: Optional[Sequence[str]] = None,
+    query_doc_nos: Optional[Sequence[str]] = None,
+) -> List[RetrievedItem]:
+    """多路加权 RRF（docs/05 §2.4）：channels = [(items, 权重), ...]。
+
+    检索式扩展后，原问题与各扩展式各自有向量/关键词通道，
+    用不同权重（原问题最高）做一次统一融合，避免多路结果互相覆盖。
+    """
+    k = rrf_k if rrf_k is not None else settings.rrf_k
     tw = timeliness_weights or settings.timeliness_weights
     article_nos: Set[str] = set(query_article_nos or [])
     doc_nos: Set[str] = set(query_doc_nos or [])
@@ -68,10 +125,9 @@ def rrf_fuse(
             fused[key].vector_similarity = item.vector_similarity
         scores[key] = scores.get(key, 0.0) + weight / (k + rank)
 
-    for rank, item in enumerate(vector_items, start=1):
-        _add(item, wv, rank)
-    for rank, item in enumerate(keyword_items, start=1):
-        _add(item, wk, rank)
+    for items, weight in channels:
+        for rank, item in enumerate(items or [], start=1):
+            _add(item, weight, rank)
 
     result: List[RetrievedItem] = []
     for key, item in fused.items():
@@ -184,7 +240,7 @@ class HybridRetriever:
             )
         if mode in ("hybrid", "keyword"):
             keyword_items = await asyncio.to_thread(
-                search_keyword, db, query_info, kb_ids
+                _keyword_channel, db, query_info, kb_ids
             )
         vector_items = self._published_items(db, vector_items)
         keyword_items = self._published_items(db, keyword_items)
@@ -227,6 +283,132 @@ class HybridRetriever:
         deduped = dedup_items(fused, self._kp_primary_chunks(db, fused))
         limit = top_k or settings.final_top_n
         return deduped[:limit]
+
+    async def retrieve_multi(
+        self,
+        db: Session,
+        query_infos: Sequence[QueryInfo],
+        *,
+        mode: str = "hybrid",
+        kb_ids: Optional[Sequence[int]] = None,
+        categories: Optional[Sequence[str]] = None,
+        timeliness: Optional[Sequence[str]] = None,
+        include_knowledge_points: bool = True,
+        include_chunks: bool = True,
+        top_k: Optional[int] = None,
+        variant_weights: Optional[Sequence[float]] = None,
+    ) -> List[RetrievedItem]:
+        """多查询召回（docs/05 §2.4）：原问题 + 检索式扩展各自双通道，再统一加权 RRF。
+
+        约定：第一个 query_info 必须是最原始问题（权重最高，默认 1.0）；
+        扩展式默认 query_expansion_weight（0.8）起逐条递减 0.15。
+        单查询时直接退化为 retrieve()，保证行为完全一致。
+        """
+        infos = [qi for qi in query_infos if qi is not None]
+        if not infos:
+            return []
+        if len(infos) == 1:
+            return await self.retrieve(
+                db, infos[0], mode=mode, kb_ids=kb_ids, categories=categories,
+                timeliness=timeliness,
+                include_knowledge_points=include_knowledge_points,
+                include_chunks=include_chunks, top_k=top_k,
+            )
+
+        source_types = []
+        if include_chunks:
+            source_types.append("chunk")
+        if include_knowledge_points:
+            source_types.append("knowledge_point")
+        if not source_types:
+            source_types = ["chunk", "knowledge_point"]
+
+        weights = list(variant_weights or [])
+        while len(weights) < len(infos):
+            i = len(weights)
+            weights.append(
+                1.0 if i == 0
+                else max(0.3, settings.query_expansion_weight - 0.15 * (i - 1))
+            )
+
+        # 向量通道无 DB 依赖，可并行；关键词通道共用一个 Session，必须串行
+        vec_lists: List[List[RetrievedItem]] = [[] for _ in infos]
+        if mode in ("hybrid", "vector"):
+            gathered = await asyncio.gather(*(
+                asyncio.to_thread(
+                    search_vector, info.effective_query, kb_ids, categories,
+                    timeliness, source_types,
+                )
+                for info in infos
+            ), return_exceptions=True)
+            for idx, res in enumerate(gathered):
+                if isinstance(res, Exception):
+                    logger.warning("检索式扩展通道向量检索失败（已跳过）: {}", res)
+                    continue
+                vec_lists[idx] = list(res)
+        kw_lists: List[List[RetrievedItem]] = [[] for _ in infos]
+        if mode in ("hybrid", "keyword"):
+            try:
+                kw_lists = await asyncio.to_thread(
+                    lambda: [_keyword_channel(db, info, kb_ids) for info in infos]
+                )
+            except Exception as exc:  # pragma: no cover - 依赖 DB
+                logger.warning("检索式扩展通道关键词检索失败（已跳过）: {}", exc)
+
+        channels: List[tuple] = []
+        for weight, vec_items, kw_items in zip(weights, vec_lists, kw_lists):
+            vec_items = [
+                i for i in self._published_items(db, vec_items)
+                if i.source_type in source_types
+            ]
+            kw_items = [
+                i for i in self._published_items(db, kw_items)
+                if i.source_type in source_types
+            ]
+            if mode in ("hybrid", "vector"):
+                channels.append(
+                    (self._hydrate_docs(db, vec_items), weight * settings.rrf_w_vector)
+                )
+            if mode in ("hybrid", "keyword"):
+                channels.append(
+                    (self._hydrate_docs(db, kw_items), weight * settings.rrf_w_keyword)
+                )
+
+        merged_articles: List[str] = []
+        merged_docs: List[str] = []
+        for info in infos:
+            merged_articles.extend(info.article_nos or [])
+            merged_docs.extend(info.doc_nos or [])
+        fused = rrf_fuse_multi(
+            channels,
+            query_article_nos=merged_articles,
+            query_doc_nos=merged_docs,
+        )
+        fused = [i for i in fused if i.source_type in source_types]
+        deduped = dedup_items(fused, self._kp_primary_chunks(db, fused))
+        limit = top_k or settings.final_top_n
+        return deduped[:limit]
+
+    @staticmethod
+    def _hydrate_docs(db: Session, items: Sequence[RetrievedItem]) -> List[RetrievedItem]:
+        """补全文档元数据（文号/机构），让结构化线索加权在融合阶段生效。"""
+        if not items:
+            return list(items)
+        from sqlalchemy import select
+
+        from app.models.document import Document
+
+        doc_ids = {i.document_id for i in items if i.document_id}
+        documents = {d.id: d for d in db.scalars(
+            select(Document).where(Document.id.in_(doc_ids))
+        ).all()} if doc_ids else {}
+        for item in items:
+            doc = documents.get(item.document_id)
+            if doc is not None:
+                item.doc_title = item.doc_title or doc.title
+                item.doc_no = item.doc_no or doc.doc_no
+                item.issuing_authority = item.issuing_authority or doc.issuing_authority
+        return list(items)
 
     def retrieve_sync(self, *args, **kwargs) -> List[RetrievedItem]:
         return asyncio.run(self.retrieve(*args, **kwargs))
