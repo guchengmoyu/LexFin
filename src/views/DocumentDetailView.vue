@@ -148,7 +148,7 @@ onMounted(async () => {
           link
           type="primary"
           style="margin-left: 12px"
-          @click="router.push({ name: 'tasks', query: { task_no: reparseTask } })"
+          @click="router.push({ name: 'knowledge-base', query: { tab: 'tasks', task_no: reparseTask } })"
         >
           查看任务进度
         </el-button>

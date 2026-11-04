@@ -30,9 +30,10 @@ const NAVS: NavItem[] = [
   { name: 'favorites', label: '我的收藏', icon: '⭐', base: '/favorites', group: 'main' },
   { name: 'history', label: '问答历史', icon: '🕘', base: '/history', group: 'main' },
   { name: 'dashboard', label: '数据概览', icon: '📊', base: '/dashboard', group: 'main' },
-  { name: 'tasks', label: '入库任务', icon: '📥', base: '/tasks', group: 'admin', roles: ['editor', 'admin'] },
-  { name: 'review', label: '人工校验', icon: '✍️', base: '/review', group: 'admin', roles: ['editor', 'admin'] },
+  { name: 'my-feedback', label: '意见反馈', icon: '📮', base: '/my-feedback', group: 'main' },
+  { name: 'evaluation', label: '测评', icon: '📈', base: '/evaluation', group: 'admin', roles: ['editor', 'admin'] },
   { name: 'feedback', label: '反馈处理', icon: '🗣', base: '/feedback', group: 'admin', roles: ['editor', 'admin'] },
+  { name: 'admin', label: '管理员界面', icon: '🛠', base: '/admin', group: 'admin', roles: ['admin'] },
 ]
 
 const navs = computed<NavItem[]>(() => NAVS.filter((n) => !n.roles || auth.hasRole(...n.roles)))

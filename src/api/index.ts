@@ -40,6 +40,7 @@ export const authApi = {
 // ---------------------------------------------------------------- 系统与统计（docs/06 §5.2）
 export const systemApi = {
   config: () => request<Record<string, any>>(`${PREFIX}/system/config`),
+  health: () => request<Record<string, any>>(`${PREFIX}/health`),
 }
 
 export const statsApi = {

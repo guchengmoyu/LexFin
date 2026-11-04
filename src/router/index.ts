@@ -82,15 +82,25 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true },
   },
   {
-    path: '/tasks',
-    name: 'tasks',
-    component: () => import('../views/TaskListView.vue'),
-    meta: { requiresAuth: true, roles: ['editor', 'admin'] },
+    path: '/my-feedback',
+    name: 'my-feedback',
+    component: () => import('../views/UserFeedbackView.vue'),
+    meta: { requiresAuth: true },
   },
   {
+    // 入库任务已并入知识库界面（保留旧链接跳转）
+    path: '/tasks',
+    redirect: (to) => ({ name: 'knowledge-base', query: { ...to.query, tab: 'tasks' } }),
+  },
+  {
+    // 人工校验已改为测评（保留旧链接跳转）
     path: '/review',
-    name: 'review',
-    component: () => import('../views/ReviewView.vue'),
+    redirect: { name: 'evaluation' },
+  },
+  {
+    path: '/evaluation',
+    name: 'evaluation',
+    component: () => import('../views/EvaluationView.vue'),
     meta: { requiresAuth: true, roles: ['editor', 'admin'] },
   },
   {
@@ -98,6 +108,12 @@ const routes: RouteRecordRaw[] = [
     name: 'feedback',
     component: () => import('../views/FeedbackView.vue'),
     meta: { requiresAuth: true, roles: ['editor', 'admin'] },
+  },
+  {
+    path: '/admin',
+    name: 'admin',
+    component: () => import('../views/AdminView.vue'),
+    meta: { requiresAuth: true, roles: ['admin'] },
   },
   {
     path: '/404',
