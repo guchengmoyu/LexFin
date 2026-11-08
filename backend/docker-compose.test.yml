@@ -1,0 +1,16 @@
+services:
+  mysql:
+    image: mysql:8.0.46
+    environment:
+      MYSQL_ROOT_PASSWORD: lexfin_isolated_test_root
+      MYSQL_DATABASE: finrag_test_local
+      MYSQL_USER: finrag_test
+      MYSQL_PASSWORD: lexfin_isolated_test_password
+    ports:
+      - "127.0.0.1:13306:3306"
+    command: ["--ngram-token-size=2"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
