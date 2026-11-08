@@ -132,12 +132,19 @@ class Settings(BaseSettings):
     pdf_text_min_chars_per_page: int = 50
 
     ocr_lang: str = "chi_sim+eng"
+    ocr_engine: str = "tesseract"
     ocr_dpi: int = 300
     ocr_psm: int = 6
     ocr_oem: int = 1
     ocr_max_workers: int = 4
     ocr_min_confidence: int = 60
     ocr_page_timeout: int = 30
+    paddle_ocr_device: str = "cpu"
+    paddle_ocr_cpu_threads: int = 4
+    paddle_ocr_enable_mkldnn: bool = False
+    paddle_ocr_det_model: str = "PP-OCRv5_mobile_det"
+    paddle_ocr_rec_model: str = "PP-OCRv5_mobile_rec"
+    paddle_ocr_cache_dir: str = "/data/models/paddlex"
 
     chunk_size: int = 500
     chunk_overlap: int = 80

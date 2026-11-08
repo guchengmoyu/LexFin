@@ -146,8 +146,9 @@ for page in doc:
 
 | 项 | 选型 |
 | --- | --- |
-| 引擎 | **Tesseract 5.x**（课题指定） |
-| 调用 | `pytesseract` |
+| 默认引擎 | **Tesseract 5.x**（课题指定，`OCR_ENGINE=tesseract`） |
+| 可选实验引擎 | PaddleOCR 3.x（`OCR_ENGINE=paddle`；单独安装可选依赖，不改变默认部署） |
+| 调用 | Tesseract 使用 `pytesseract`；Paddle 使用 PaddleOCR 3 `predict` API |
 | 语言包 | `chi_sim` + `eng`（Dockerfile 中 `apt-get install tesseract-ocr tesseract-ocr-chi-sim`） |
 | PDF 转图 | **PyMuPDF `page.get_pixmap(dpi=300)`**（避免额外引入 poppler 依赖） |
 | 图像处理 | Pillow + OpenCV（可选，用于倾斜校正） |
@@ -187,11 +188,19 @@ for page in doc:
 | 项 | 设计 |
 | --- | --- |
 | 缓存路径 | `/data/ocr_cache/{file_md5}/p{page_no}.json` |
-| 缓存内容 | 还原后的段落列表 + 平均置信度 |
-| 命中条件 | 文件 MD5 与页号一致，且 `TESSERACT_VERSION` 与缓存中记录一致 |
+| 缓存内容 | 引擎标识、关键引擎参数、格式版本、还原后的段落列表 + 平均置信度 |
+| 命中条件 | 文件 MD5 与页号一致，且引擎、关键参数和缓存格式版本一致 |
 | 单页耗时 | 300 DPI 中文页 CPU 约 **1.5~3 秒** |
 | 100 页扫描件 | 约 3~5 分钟 → **必须后台任务 + 进度上报** |
 | 加速手段 | 目标机多核时用 `ProcessPoolExecutor(max_workers=min(4, cpu_count))` 并行页 |
+
+缓存记录 OCR 引擎标识与缓存格式版本；切换引擎后会重新识别，不复用另一引擎生成的结果。Paddle 的识别分数映射到 0~100 以兼容现有质量告警，但不同引擎分数未经校准，不能直接用分数高低比较识别准确率。Paddle 推理在进程内串行执行，避免同一模型实例被多页任务并发调用。
+
+#### 可选启用 PaddleOCR
+
+默认保持 `OCR_ENGINE=tesseract`。本地 Python 3.11 环境需要先安装 `backend/requirements-ocr-paddle.txt`，然后在 `.env` 设置 `OCR_ENGINE=paddle`。模型会按 `PADDLE_OCR_CACHE_DIR` 下载/缓存，设备、CPU 线程和 oneDNN 可由 `PADDLE_OCR_DEVICE`、`PADDLE_OCR_CPU_THREADS`、`PADDLE_OCR_ENABLE_MKLDNN` 配置；默认关闭 oneDNN，以避开部分 CPU/Paddle 组合的兼容问题。缺少 Paddle 依赖或模型无法加载时健康检查会报告 OCR 不可用，不会静默切回 Tesseract。
+
+Docker 构建默认不带 Paddle 依赖；仅在明确需要 Paddle 的实验镜像时传 `--build-arg WITH_PADDLE_OCR=true`，运行配置再设 `OCR_ENGINE=paddle`。回退时改回 `OCR_ENGINE=tesseract` 并重启服务即可。引擎切换只改变扫描页的文字识别；表格行列恢复仍由独立的版面/表格解析负责。
 
 ### 4.5 OCR 质量兜底
 
@@ -336,12 +345,19 @@ PDF_TEXT_MIN_CHARS=20              # 单页判定为扫描件的字符数下限
 PDF_TEXT_MIN_CHARS_PER_PAGE=50     # 整份文档判定为扫描件的均值下限
 
 OCR_LANG=chi_sim+eng
+OCR_ENGINE=tesseract              # tesseract / paddle；默认保持 Tesseract
 OCR_DPI=300
 OCR_PSM=6
 OCR_OEM=1
 OCR_MAX_WORKERS=4
 OCR_MIN_CONFIDENCE=60
 OCR_CACHE_DIR=/data/ocr_cache
+PADDLE_OCR_DEVICE=cpu
+PADDLE_OCR_CPU_THREADS=4
+PADDLE_OCR_ENABLE_MKLDNN=false
+PADDLE_OCR_DET_MODEL=PP-OCRv5_mobile_det
+PADDLE_OCR_REC_MODEL=PP-OCRv5_mobile_rec
+PADDLE_OCR_CACHE_DIR=/data/models/paddlex
 
 CHUNK_SIZE=500
 CHUNK_OVERLAP=80

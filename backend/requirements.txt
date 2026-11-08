@@ -40,6 +40,8 @@ opencv-python-headless==4.10.0.84
 # --- OCR（课题指定 Tesseract 5，系统包在 Dockerfile 安装） ---
 pytesseract==0.3.13
 
+# PaddleOCR is optional; install backend/requirements-ocr-paddle.txt only when selected.
+
 # --- LLM / Embedding 云接口（OpenAI 兼容协议，ADR-03） ---
 openai==1.58.1
 

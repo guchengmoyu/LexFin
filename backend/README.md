@@ -94,6 +94,8 @@ docker compose logs -f backend
 
 镜像内已安装 Tesseract 5 + `chi_sim/eng`；需要解析 `.doc` 时置 `WITH_LIBREOFFICE=true`。
 
+OCR 默认使用 Tesseract。需要试验可选 PaddleOCR 时，本地安装 `pip install -r requirements-ocr-paddle.txt` 并设置 `OCR_ENGINE=paddle`；Docker 实验镜像需添加构建参数 `WITH_PADDLE_OCR=true`。模型首次运行时下载到 `PADDLE_OCR_CACHE_DIR`，切回 `OCR_ENGINE=tesseract` 即可恢复默认实现。两种引擎的置信分数不能作为同一尺度的准确率比较。
+
 ## 四、核心链路速查（问答一次发生了什么）
 
 ```

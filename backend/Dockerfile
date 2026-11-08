@@ -6,6 +6,7 @@
 FROM python:3.11-slim
 
 ARG WITH_LIBREOFFICE=false
+ARG WITH_PADDLE_OCR=false
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -30,6 +31,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # --- Python 依赖（先装依赖层，利用 Docker 缓存） ---
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
+RUN if [ "$WITH_PADDLE_OCR" = "true" ]; then \
+        pip install -r requirements-ocr-paddle.txt; \
+    fi
 
 # --- 应用代码 ---
 COPY app ./app

@@ -67,7 +67,7 @@ def health(db: Session = Depends(get_db)):
 
         ok, detail = ocr_engine.available()
         dependencies["ocr"] = (
-            {"status": "ok", "langs": settings.ocr_lang.split("+")} if ok
+            {"status": "ok", "engine": settings.ocr_engine, "detail": detail, "langs": settings.ocr_lang.split("+")} if ok
             else {"status": "error", "message": detail}
         )
         if not ok:
