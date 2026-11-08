@@ -1,4 +1,5 @@
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,24 @@ def test_paddle_must_be_selected_explicitly(monkeypatch):
     monkeypatch.setattr(settings, "ocr_engine", "paddle")
 
     assert isinstance(OcrEngine()._backend, PaddleOcrEngine)
+
+
+def test_paddle_backend_uses_orientation_and_cpu_settings(monkeypatch):
+    captured = {}
+
+    def fake_paddle_ocr(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setitem(sys.modules, "paddleocr", SimpleNamespace(PaddleOCR=fake_paddle_ocr))
+    monkeypatch.setattr(settings, "paddle_ocr_use_doc_orientation", True)
+    monkeypatch.setattr(settings, "paddle_ocr_enable_mkldnn", False)
+    backend = PaddleOcrEngine()
+
+    backend._get_ocr()
+
+    assert captured["use_doc_orientation_classify"] is True
+    assert captured["enable_mkldnn"] is False
 
 
 def test_unknown_engine_fails_with_configuration_error(monkeypatch):

@@ -165,7 +165,7 @@ class PaddleOcrEngine:
                     self._ocr = PaddleOCR(
                         text_detection_model_name=settings.paddle_ocr_det_model,
                         text_recognition_model_name=settings.paddle_ocr_rec_model,
-                        use_doc_orientation_classify=False,
+                        use_doc_orientation_classify=settings.paddle_ocr_use_doc_orientation,
                         use_doc_unwarping=False,
                         use_textline_orientation=False,
                         device=settings.paddle_ocr_device,
@@ -206,6 +206,7 @@ class PaddleOcrEngine:
                     "det_model": settings.paddle_ocr_det_model,
                     "rec_model": settings.paddle_ocr_rec_model,
                     "device": settings.paddle_ocr_device,
+                    "doc_orientation": settings.paddle_ocr_use_doc_orientation,
                 }
                 if cached.get("engine") == "paddle" and cached.get("config") == cache_config and cached.get("format_version") == 3:
                     return cached["paragraphs"], cached["avg_conf"]
@@ -234,6 +235,7 @@ class PaddleOcrEngine:
                                 "det_model": settings.paddle_ocr_det_model,
                                 "rec_model": settings.paddle_ocr_rec_model,
                                 "device": settings.paddle_ocr_device,
+                                "doc_orientation": settings.paddle_ocr_use_doc_orientation,
                             },
                             "format_version": 3,
                             "paragraphs": paragraphs,

@@ -142,6 +142,7 @@ class Settings(BaseSettings):
     paddle_ocr_device: str = "cpu"
     paddle_ocr_cpu_threads: int = 4
     paddle_ocr_enable_mkldnn: bool = False
+    paddle_ocr_use_doc_orientation: bool = True
     paddle_ocr_det_model: str = "PP-OCRv5_mobile_det"
     paddle_ocr_rec_model: str = "PP-OCRv5_mobile_rec"
     paddle_ocr_cache_dir: str = "/data/models/paddlex"

@@ -198,7 +198,7 @@ for page in doc:
 
 #### 可选启用 PaddleOCR
 
-默认保持 `OCR_ENGINE=tesseract`。本地 Python 3.11 环境需要先安装 `backend/requirements-ocr-paddle.txt`，然后在 `.env` 设置 `OCR_ENGINE=paddle`。模型会按 `PADDLE_OCR_CACHE_DIR` 下载/缓存，设备、CPU 线程和 oneDNN 可由 `PADDLE_OCR_DEVICE`、`PADDLE_OCR_CPU_THREADS`、`PADDLE_OCR_ENABLE_MKLDNN` 配置；默认关闭 oneDNN，以避开部分 CPU/Paddle 组合的兼容问题。缺少 Paddle 依赖或模型无法加载时健康检查会报告 OCR 不可用，不会静默切回 Tesseract。
+默认保持 `OCR_ENGINE=tesseract`。本地 Python 3.11 环境需要先安装 `backend/requirements-ocr-paddle.txt`，然后在 `.env` 设置 `OCR_ENGINE=paddle`。模型会按 `PADDLE_OCR_CACHE_DIR` 下载/缓存，设备、CPU 线程、oneDNN 和文档方向分类可由 `PADDLE_OCR_DEVICE`、`PADDLE_OCR_CPU_THREADS`、`PADDLE_OCR_ENABLE_MKLDNN`、`PADDLE_OCR_USE_DOC_ORIENTATION` 配置；oneDNN 默认关闭以避开部分 CPU/Paddle 组合的兼容问题，文档方向分类默认启用以处理横向扫描页。缺少 Paddle 依赖或模型无法加载时健康检查会报告 OCR 不可用，不会静默切回 Tesseract。
 
 Docker 构建默认不带 Paddle 依赖；仅在明确需要 Paddle 的实验镜像时传 `--build-arg WITH_PADDLE_OCR=true`，运行配置再设 `OCR_ENGINE=paddle`。回退时改回 `OCR_ENGINE=tesseract` 并重启服务即可。引擎切换只改变扫描页的文字识别；表格行列恢复仍由独立的版面/表格解析负责。
 
@@ -355,6 +355,7 @@ OCR_CACHE_DIR=/data/ocr_cache
 PADDLE_OCR_DEVICE=cpu
 PADDLE_OCR_CPU_THREADS=4
 PADDLE_OCR_ENABLE_MKLDNN=false
+PADDLE_OCR_USE_DOC_ORIENTATION=true
 PADDLE_OCR_DET_MODEL=PP-OCRv5_mobile_det
 PADDLE_OCR_REC_MODEL=PP-OCRv5_mobile_rec
 PADDLE_OCR_CACHE_DIR=/data/models/paddlex
